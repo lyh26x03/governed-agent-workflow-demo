@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import time
 from pathlib import Path
@@ -9,9 +10,11 @@ import streamlit as st
 
 
 PROJECT_NAME = "Gintec Copilot"
-DEMO_CAPTION = "Demo v1.1 - 最小 Streamlit 專案骨架，不串接 LLM，也不實作真 RAG。"
+DEMO_CAPTION = "Demo v1.1 - 本地 keyword search 搭配 mock/Gemma 回答層，尚未實作真 RAG。"
 MOCK_REPLY = "這是 Task 1 的假回覆：目前尚未接上 RAG / LLM。"
 DOCS_DIR = Path("data") / "docs"
+DEFAULT_LLM_MODE = "mock"
+DEFAULT_GEMMA_MODEL = "gemma-4-26b-a4b-it"
 
 TEST_QUESTIONS = [
     "藍牙產品要銷售到歐盟，初步 scoping 需要確認哪些項目？",
@@ -25,8 +28,12 @@ TEST_QUESTIONS = [
 MOCK_LOG = {
     "route_decision": "mock",
     "selected_tool": "none",
+    "llm_mode": DEFAULT_LLM_MODE,
+    "model": "mock",
+    "fallback_used": False,
     "retrieved_docs": [],
     "latency_ms": 0,
+    "error": None,
 }
 
 COMMON_KEYWORDS = [
@@ -203,10 +210,141 @@ def format_search_response(results: list[dict[str, Any]]) -> str:
     return "\n".join(response_lines)
 
 
-def build_search_log(results: list[dict[str, Any]], latency_ms: int) -> dict[str, Any]:
+def load_llm_config() -> dict[str, str]:
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv()
+    except Exception:
+        pass
+
+    llm_mode = os.getenv("LLM_MODE", DEFAULT_LLM_MODE).strip().lower()
+    if llm_mode not in {"mock", "gemma", "auto"}:
+        llm_mode = DEFAULT_LLM_MODE
+
     return {
-        "route_decision": "search",
+        "llm_mode": llm_mode,
+        "gemini_api_key": os.getenv("GEMINI_API_KEY", "").strip(),
+        "gemma_model": os.getenv("GEMMA_MODEL", DEFAULT_GEMMA_MODEL).strip() or DEFAULT_GEMMA_MODEL,
+    }
+
+
+def generate_mock_answer(search_results: list[dict[str, Any]]) -> str:
+    if not search_results:
+        return "目前知識庫沒有找到足夠相關的段落，無法提供可靠回答，建議補充文件或轉交人工確認。"
+
+    response_lines = ["根據目前知識庫檢索結果，初步整理如下："]
+    for index, result in enumerate(search_results[:3], start=1):
+        preview = build_preview(result["content"], limit=120)
+        response_lines.append(f"{index}. {preview} {result['citation']}")
+
+    return "\n".join(response_lines)
+
+
+def build_gemma_prompt(user_query: str, search_results: list[dict[str, Any]]) -> str:
+    retrieved_context = []
+    for index, result in enumerate(search_results[:3], start=1):
+        retrieved_context.append(
+            "\n".join(
+                [
+                    f"Result {index}",
+                    f"filename: {result['filename']}",
+                    f"section_title: {result['section_title']}",
+                    f"citation: {result['citation']}",
+                    "content:",
+                    result["content"],
+                ]
+            )
+        )
+
+    context_text = "\n\n---\n\n".join(retrieved_context) if retrieved_context else "無檢索結果。"
+
+    return f"""你是企業內部安規認證知識助手。
+只能根據提供的「檢索結果」回答。
+使用繁體中文。
+回答要簡潔、條列化。
+每個關鍵結論後面都必須附 citation。
+不可補充檢索結果以外的知識。
+不可說「一定通過」「保證合法」「可直接對客戶承諾」。
+若檢索結果不足，必須明確說資料不足，不可猜測。
+
+使用者問題：
+{user_query}
+
+檢索結果：
+{context_text}
+"""
+
+
+def call_gemma(user_query: str, search_results: list[dict[str, Any]], api_key: str, model: str) -> str:
+    if not api_key:
+        raise ValueError("缺少 GEMINI_API_KEY，無法呼叫 Gemma。")
+
+    from google import genai
+
+    client = genai.Client(api_key=api_key)
+    response = client.models.generate_content(
+        model=model,
+        contents=build_gemma_prompt(user_query, search_results),
+    )
+
+    text = getattr(response, "text", None)
+    if not text:
+        raise ValueError("Gemma 回應為空。")
+
+    return text
+
+
+def generate_grounded_answer(user_query: str, search_results: list[dict[str, Any]]) -> dict[str, Any]:
+    config = load_llm_config()
+    llm_mode = config["llm_mode"]
+    model = config["gemma_model"]
+
+    if llm_mode == "mock":
+        return {
+            "answer": generate_mock_answer(search_results),
+            "llm_mode": "mock",
+            "model": "mock",
+            "fallback_used": False,
+            "error": None,
+        }
+
+    try:
+        answer = call_gemma(user_query, search_results, config["gemini_api_key"], model)
+        return {
+            "answer": answer,
+            "llm_mode": llm_mode,
+            "model": model,
+            "fallback_used": False,
+            "error": None,
+        }
+    except Exception as exc:
+        error_message = str(exc)
+        if llm_mode == "auto":
+            return {
+                "answer": generate_mock_answer(search_results),
+                "llm_mode": "auto",
+                "model": model,
+                "fallback_used": True,
+                "error": error_message,
+            }
+
+        return {
+            "answer": f"Gemma 模式目前無法產生回答：{error_message}",
+            "llm_mode": "gemma",
+            "model": model,
+            "fallback_used": False,
+            "error": error_message,
+        }
+
+
+def build_search_log(results: list[dict[str, Any]], answer_result: dict[str, Any], latency_ms: int) -> dict[str, Any]:
+    return {
+        "route_decision": "search_then_answer",
         "selected_tool": "search_knowledge_base",
+        "llm_mode": answer_result["llm_mode"],
+        "model": answer_result["model"],
+        "fallback_used": answer_result["fallback_used"],
         "retrieved_docs": [
             {
                 "filename": result["filename"],
@@ -216,24 +354,26 @@ def build_search_log(results: list[dict[str, Any]], latency_ms: int) -> dict[str
             for result in results
         ],
         "latency_ms": latency_ms,
+        "error": answer_result["error"],
     }
 
 
 def add_user_message(content: str, documents: list[dict[str, Any]]) -> None:
     started_at = time.perf_counter()
     results = search_knowledge_base(content, documents)
+    answer_result = generate_grounded_answer(content, results)
     latency_ms = round((time.perf_counter() - started_at) * 1000)
 
     st.session_state.messages.append({"role": "user", "content": content})
-    st.session_state.messages.append({"role": "assistant", "content": format_search_response(results)})
-    st.session_state.last_log = build_search_log(results, latency_ms)
+    st.session_state.messages.append({"role": "assistant", "content": answer_result["answer"]})
+    st.session_state.last_log = build_search_log(results, answer_result, latency_ms)
 
 
 def render_sidebar(documents: list[dict[str, Any]], load_error: str | None) -> None:
     with st.sidebar:
         st.header("Demo 說明")
-        st.write("目前是 Task 2：加入本地 Markdown 文件載入。")
-        st.write("尚未串接 LLM、RAG、檢索、Tool Calling 或轉人工流程。")
+        st.write("目前是 Task 4A：加入 LLM 回答層，預設使用 mock，可切換 Gemma。")
+        st.write("尚未加入 RAG、Tool Calling、轉人工流程或向量資料庫。")
 
         st.divider()
         st.subheader("知識庫文件")
