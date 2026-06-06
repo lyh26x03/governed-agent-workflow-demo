@@ -13,11 +13,28 @@ from pydantic import BaseModel, Field
 
 
 PROJECT_NAME = "Gintec Copilot"
-DEMO_CAPTION = "Demo v2.1 - deterministic routing、本地 RAG 與 HITL 人工審查流程。"
+DEMO_CAPTION = "Demo v2.1 - deterministic routing、本地 RAG、HITL 與 Data Ops Sandbox。"
 MOCK_REPLY = "這是 Task 1 的假回覆：目前尚未接上 RAG / LLM。"
 DOCS_DIR = Path("data") / "docs"
 DEFAULT_LLM_MODE = "mock"
 DEFAULT_GEMMA_MODEL = "gemma-4-26b-a4b-it"
+DATA_OPS_TABLE_NAME = "demo_case_status"
+FAKE_SANDBOX_ROWS = [
+    {
+        "case_id": "DEMO-001",
+        "customer_name": "Alpha Electronics",
+        "product_type": "Bluetooth Headset",
+        "review_status": "審核中",
+        "last_updated_by": "engineer_a",
+    },
+    {
+        "case_id": "DEMO-002",
+        "customer_name": "Beta Devices",
+        "product_type": "Wi-Fi Module",
+        "review_status": "待補件",
+        "last_updated_by": "engineer_b",
+    },
+]
 
 TEST_QUESTIONS = [
     "客戶有一款藍牙耳機要出口到歐洲，初步 scoping 要看哪些指令？",
@@ -47,6 +64,10 @@ MOCK_LOG = {
     "action_status": "idle",
     "ticket_id": None,
     "draft_type": None,
+    "sandbox_id": None,
+    "current_action_tier": None,
+    "sql_validation_status": "N/A",
+    "approval_queue": None,
 }
 
 COMMON_KEYWORDS = [
@@ -108,6 +129,22 @@ class HumanReviewTicket(BaseModel):
     retrieved_docs: list[dict[str, Any]]
     approval_required: bool
     status: Literal["Pending Human Review"]
+
+
+class DataOpsSandboxResult(BaseModel):
+    sandbox_id: str
+    route_status: Literal["data_ops_dry_run"]
+    permission_tier: Literal["Tier 3"]
+    current_action_tier: Literal["Tier 1"]
+    risk_type: Literal["System Modification"]
+    risk_reason: str
+    generated_sql: str
+    sql_validation_status: Literal["passed", "blocked"]
+    before_rows: list[dict[str, Any]]
+    after_rows: list[dict[str, Any]]
+    approval_required: bool
+    approval_queue: Literal["Supervisor Approval Queue"]
+    action_status: Literal["Dry-run only"]
 
 
 def initialize_state() -> None:
@@ -755,6 +792,81 @@ def generate_draft_and_escalate_skill(
     }
 
 
+def build_data_ops_dry_run_sql() -> str:
+    return f"""-- DRY RUN ONLY. NOT EXECUTED ON PRODUCTION DATABASE.
+UPDATE {DATA_OPS_TABLE_NAME}
+SET review_status = '已通過',
+    last_updated_by = 'AI_SANDBOX_PREVIEW'
+WHERE case_id = 'DEMO-001';"""
+
+
+def validate_data_ops_sql(sql: str) -> tuple[Literal["passed", "blocked"], str | None]:
+    normalized = re.sub(r"\s+", " ", sql).strip()
+    statement_without_comment = re.sub(r"^--[^\n]*\n", "", sql.strip(), count=1).strip()
+    statement_without_comment = re.sub(r"\s+", " ", statement_without_comment)
+
+    if not sql.startswith("-- DRY RUN ONLY. NOT EXECUTED ON PRODUCTION DATABASE."):
+        return "blocked", "缺少必要的 dry-run 安全註記。"
+    if re.search(r"\b(DROP|DELETE|ALTER|INSERT|TRUNCATE|MERGE|CREATE)\b", normalized, re.IGNORECASE):
+        return "blocked", "SQL 包含禁止的資料庫操作。"
+    if statement_without_comment.count(";") != 1 or not statement_without_comment.endswith(";"):
+        return "blocked", "只允許單一 SQL statement。"
+
+    allowed_pattern = re.compile(
+        rf"^UPDATE {re.escape(DATA_OPS_TABLE_NAME)} "
+        r"SET review_status = '已通過', last_updated_by = 'AI_SANDBOX_PREVIEW' "
+        r"WHERE case_id = 'DEMO-001';$",
+        re.IGNORECASE,
+    )
+    if not allowed_pattern.fullmatch(statement_without_comment):
+        return "blocked", "只允許更新 demo_case_status 的 DEMO-001，且必須包含指定 WHERE 條件。"
+
+    return "passed", None
+
+
+def data_ops_sandbox_skill(user_query: str, route_decision: RouteDecision) -> dict[str, Any]:
+    target_status_detected = any(
+        term in re.sub(r"\s+", "", user_query)
+        for term in ["審核狀態改成通過", "狀態改成通過", "改成通過", "已通過"]
+    )
+    generated_sql = build_data_ops_dry_run_sql() if target_status_detected else (
+        "-- DRY RUN ONLY. NOT EXECUTED ON PRODUCTION DATABASE.\n"
+        "-- BLOCKED: 無法辨識允許的審核狀態更新意圖。"
+    )
+    validation_status, validation_error = validate_data_ops_sql(generated_sql)
+
+    before_rows = [row.copy() for row in FAKE_SANDBOX_ROWS if row["case_id"] == "DEMO-001"]
+    after_rows = [row.copy() for row in before_rows]
+    if validation_status == "passed":
+        after_rows[0]["review_status"] = "已通過"
+        after_rows[0]["last_updated_by"] = "AI_SANDBOX_PREVIEW"
+
+    result = DataOpsSandboxResult(
+        sandbox_id=f"SANDBOX-{datetime.now().astimezone():%Y%m%d}-{uuid.uuid4().hex[:8].upper()}",
+        route_status="data_ops_dry_run",
+        permission_tier="Tier 3",
+        current_action_tier="Tier 1",
+        risk_type="System Modification",
+        risk_reason=route_decision.risk_reason,
+        generated_sql=generated_sql,
+        sql_validation_status=validation_status,
+        before_rows=before_rows,
+        after_rows=after_rows,
+        approval_required=True,
+        approval_queue="Supervisor Approval Queue",
+        action_status="Dry-run only",
+    )
+
+    return {
+        "sandbox_result": result,
+        "answer": "已建立 Data Ops Sandbox dry-run preview；未連接或寫入任何 production database。",
+        "llm_mode": load_llm_config()["llm_mode"],
+        "model": "deterministic-data-ops-sandbox",
+        "fallback_used": False,
+        "error": validation_error,
+    }
+
+
 def generate_grounded_answer(user_query: str, search_results: list[dict[str, Any]]) -> dict[str, Any]:
     config = load_llm_config()
     llm_mode = config["llm_mode"]
@@ -814,6 +926,7 @@ def build_route_log(
     latency_ms: int,
     action_status: str,
     ticket: HumanReviewTicket | None = None,
+    sandbox_result: DataOpsSandboxResult | None = None,
 ) -> dict[str, Any]:
     log = {
         "request_id": f"REQ-{datetime.now().astimezone():%Y%m%d}-{uuid.uuid4().hex[:8].upper()}",
@@ -843,6 +956,10 @@ def build_route_log(
         "action_status": action_status,
         "ticket_id": ticket.ticket_id if ticket else None,
         "draft_type": ticket.draft_type if ticket else None,
+        "sandbox_id": sandbox_result.sandbox_id if sandbox_result else None,
+        "current_action_tier": sandbox_result.current_action_tier if sandbox_result else None,
+        "sql_validation_status": sandbox_result.sql_validation_status if sandbox_result else "N/A",
+        "approval_queue": sandbox_result.approval_queue if sandbox_result else None,
     }
     return log
 
@@ -853,6 +970,7 @@ def add_user_message(content: str, documents: list[dict[str, Any]]) -> None:
     route_decision = route_user_request(content, conversation_state)
     results: list[dict[str, Any]] = []
     ticket: HumanReviewTicket | None = None
+    sandbox_result: DataOpsSandboxResult | None = None
 
     if route_decision.route_status == "search":
         search_query = content
@@ -874,18 +992,27 @@ def add_user_message(content: str, documents: list[dict[str, Any]]) -> None:
             "error": hitl_result["error"],
         }
         action_status = "pending_human_review"
+    elif route_decision.route_status == "data_ops_dry_run":
+        data_ops_result = data_ops_sandbox_skill(content, route_decision)
+        sandbox_result = data_ops_result["sandbox_result"]
+        answer_result = {
+            "answer": data_ops_result["answer"],
+            "llm_mode": data_ops_result["llm_mode"],
+            "model": data_ops_result["model"],
+            "fallback_used": data_ops_result["fallback_used"],
+            "error": data_ops_result["error"],
+        }
+        action_status = "dry_run_only"
     else:
         config = load_llm_config()
-        placeholder_answers = {
-            "data_ops_dry_run": "Sandbox Gate placeholder，下一階段生成 SQL dry-run preview",
+        guardrail_answers = {
             "out_of_scope": "此問題超出安規認證業務範疇，已採零檢索策略。",
         }
         action_statuses = {
-            "data_ops_dry_run": "dry_run_only",
             "out_of_scope": "no_retrieval",
         }
         answer_result = {
-            "answer": placeholder_answers[route_decision.route_status],
+            "answer": guardrail_answers[route_decision.route_status],
             "llm_mode": config["llm_mode"],
             "model": "deterministic-rule-router",
             "fallback_used": False,
@@ -899,6 +1026,8 @@ def add_user_message(content: str, documents: list[dict[str, Any]]) -> None:
     assistant_message: dict[str, Any] = {"role": "assistant", "content": answer_result["answer"]}
     if ticket:
         assistant_message["hitl_ticket"] = ticket.model_dump()
+    if sandbox_result:
+        assistant_message["sandbox_result"] = sandbox_result.model_dump()
     st.session_state.messages.append(assistant_message)
     st.session_state.last_log = build_route_log(
         route_decision,
@@ -907,14 +1036,15 @@ def add_user_message(content: str, documents: list[dict[str, Any]]) -> None:
         latency_ms,
         action_status,
         ticket,
+        sandbox_result,
     )
 
 
 def render_sidebar(documents: list[dict[str, Any]], load_error: str | None) -> None:
     with st.sidebar:
         st.header("Demo 說明")
-        st.write("目前是 Task 5B：高風險商務請求會進入 HITL Gate，建立人工審查 ticket 與安全草稿。")
-        st.write("Data Ops 仍只顯示 placeholder，尚未執行 Task 5C。")
+        st.write("目前完成 Task 5C：高風險商務請求進入 HITL，系統修改意圖進入 Data Ops Sandbox。")
+        st.write("所有資料操作僅產生 fake sandbox dry-run preview，不連接真實資料庫。")
 
         st.divider()
         st.subheader("知識庫文件")
@@ -985,6 +1115,21 @@ def render_hitl_ticket(ticket: dict[str, Any]) -> None:
             )
 
 
+def render_data_ops_sandbox(sandbox_result: dict[str, Any]) -> None:
+    st.error("SANDBOX GATE（Tier 3）：偵測到內部系統修改意圖，已禁止 production 寫入。")
+    with st.expander("[SANDBOX GATE] Data Ops Dry-run Preview", expanded=True):
+        st.write(f"**sandbox_id:** {sandbox_result['sandbox_id']}")
+        st.write(f"**permission_tier:** {sandbox_result['permission_tier']}")
+        st.write(f"**current_action_tier:** {sandbox_result['current_action_tier']}")
+        st.write(f"**sql_validation_status:** {sandbox_result['sql_validation_status']}")
+        st.code(sandbox_result["generated_sql"], language="sql")
+        st.subheader("Before")
+        st.table(sandbox_result["before_rows"])
+        st.subheader("After")
+        st.table(sandbox_result["after_rows"])
+        st.warning("此結果僅為 dry-run preview，需主管核准後才可由授權人員處理。")
+
+
 def render_chat(documents: list[dict[str, Any]]) -> None:
     st.subheader("Chat")
 
@@ -993,6 +1138,8 @@ def render_chat(documents: list[dict[str, Any]]) -> None:
             st.write(message["content"])
             if message.get("hitl_ticket"):
                 render_hitl_ticket(message["hitl_ticket"])
+            if message.get("sandbox_result"):
+                render_data_ops_sandbox(message["sandbox_result"])
 
     prompt = st.chat_input("請輸入產品認證或 scoping 相關問題")
     if prompt:
