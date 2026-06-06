@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 
 PROJECT_NAME = "Gintec Copilot"
-DEMO_CAPTION = "Demo v2.1 - deterministic routing 搭配本地 RAG 與安全 gate placeholder。"
+DEMO_CAPTION = "Demo v2.1 - deterministic routing、本地 RAG 與 HITL 人工審查流程。"
 MOCK_REPLY = "這是 Task 1 的假回覆：目前尚未接上 RAG / LLM。"
 DOCS_DIR = Path("data") / "docs"
 DEFAULT_LLM_MODE = "mock"
@@ -45,6 +45,8 @@ MOCK_LOG = {
     "latency_ms": 0,
     "error": None,
     "action_status": "idle",
+    "ticket_id": None,
+    "draft_type": None,
 }
 
 COMMON_KEYWORDS = [
@@ -90,6 +92,22 @@ class RouteDecision(BaseModel):
     retrieval_required: bool
     approval_required: bool
     confidence: float = Field(ge=0.0, le=1.0)
+
+
+class HumanReviewTicket(BaseModel):
+    ticket_id: str
+    route_status: Literal["generate_draft_and_escalate"]
+    permission_tier: Literal["Tier 1"]
+    risk_type: str
+    risk_reason: str
+    intent_summary: str
+    suggested_owner: str
+    original_query: str
+    draft_type: Literal["商務澄清信草稿"]
+    draft_preview: str
+    retrieved_docs: list[dict[str, Any]]
+    approval_required: bool
+    status: Literal["Pending Human Review"]
 
 
 def initialize_state() -> None:
@@ -562,6 +580,181 @@ def call_gemma(user_query: str, search_results: list[dict[str, Any]], api_key: s
     return format_bulleted_answer(candidate_lines, search_results)
 
 
+def build_human_review_draft_template(user_query: str) -> str:
+    return """主旨：認證評估資訊確認與後續安排
+
+您好，
+
+感謝您提出產品認證結果與後續商務安排的確認需求。
+
+為提供適當的初步評估與後續商務安排，我們需要由認證工程與業務窗口共同確認產品條件、適用規範及測試範圍。現階段內容僅作為資訊蒐集與人工審查草稿，不代表最終認證、報價、交期或正式合規結論。
+
+煩請協助補充：
+1. 產品型號
+2. 無線模組資訊
+3. 目標市場
+4. 是否已有前測或測試報告
+5. 樣品可提供時間
+
+收到完整資訊後，我們將安排相關窗口進一步確認評估範圍與後續流程。
+
+謝謝。"""
+
+
+def build_human_review_gemma_prompt(user_query: str, search_results: list[dict[str, Any]]) -> str:
+    context_lines = []
+    for result in search_results[:5]:
+        context_lines.append(
+            f"- {result['filename']} / {result['section_title']}: {build_preview(result['clean_content'], 260)}"
+        )
+
+    return f"""你是企業安規認證公司的內部商務助理。請產生一封繁體中文「商務澄清信草稿」，供人工審查，不可直接回答使用者的高風險要求。
+
+安全規則：
+- 不得保證認證結果或產品通過。
+- 不得提供正式報價。
+- 不得承諾交期。
+- 不得做出法律或正式合規結論。
+- 明確說明草稿仍需人工審查。
+- 必須要求補充：產品型號、無線模組資訊、目標市場、是否已有前測或測試報告、樣品可提供時間。
+- 不要自行加入 citation。
+
+使用者原始問題：
+{user_query}
+
+內部參考資料：
+{chr(10).join(context_lines)}
+"""
+
+
+def validate_human_review_draft(draft: str) -> None:
+    required_items = ["產品型號", "無線模組資訊", "目標市場", "前測或測試報告", "樣品可提供時間"]
+    prohibited_patterns = [
+        r"保證.{0,8}通過",
+        r"一定.{0,8}通過",
+        r"正式報價.{0,20}(為|是|：|:|\d)",
+        r"承諾.{0,12}(交期|完成|通過)",
+        r"(確認|判定).{0,8}(合法|合規)",
+    ]
+
+    if not draft.strip():
+        raise ValueError("Gemma 商務澄清信草稿為空。")
+    if any(item not in draft for item in required_items):
+        raise ValueError("Gemma 草稿缺少必要的資訊蒐集項目。")
+    if any(re.search(pattern, draft, flags=re.IGNORECASE) for pattern in prohibited_patterns):
+        raise ValueError("Gemma 草稿未通過高風險承諾安全檢查。")
+
+
+def call_gemma_for_human_review_draft(
+    user_query: str,
+    search_results: list[dict[str, Any]],
+    api_key: str,
+    model: str,
+) -> str:
+    if not api_key:
+        raise ValueError("缺少 GEMINI_API_KEY，無法呼叫 Gemma。")
+
+    from google import genai
+
+    client = genai.Client(api_key=api_key)
+    response = client.models.generate_content(
+        model=model,
+        contents=build_human_review_gemma_prompt(user_query, search_results),
+    )
+    draft = getattr(response, "text", None) or ""
+    validate_human_review_draft(draft)
+    return draft.strip()
+
+
+def prioritize_human_review_results(results: list[dict[str, Any]], limit: int = 5) -> list[dict[str, Any]]:
+    def priority(result: dict[str, Any]) -> tuple[int, int]:
+        filename = result["filename"].lower()
+        if filename.startswith("policy"):
+            source_priority = 0
+        elif filename.startswith("faq"):
+            source_priority = 1
+        elif filename.startswith("sop"):
+            source_priority = 2
+        else:
+            source_priority = 3
+        return source_priority, -result["score"]
+
+    return sorted(results, key=priority)[:limit]
+
+
+def suggest_human_review_owner(risk_type: str) -> str:
+    if risk_type == "Commercial/Pricing":
+        return "業務主管"
+    if risk_type == "Low Confidence":
+        return "認證工程師"
+    return "認證工程師與業務主管"
+
+
+def generate_draft_and_escalate_skill(
+    user_query: str,
+    route_decision: RouteDecision,
+    documents: list[dict[str, Any]],
+) -> dict[str, Any]:
+    search_results = prioritize_human_review_results(
+        search_knowledge_base(user_query, documents, top_k=12)
+    )
+    config = load_llm_config()
+    llm_mode = config["llm_mode"]
+    model = config["gemma_model"]
+    draft_preview = build_human_review_draft_template(user_query)
+    fallback_used = False
+    error = None
+    response_model = "deterministic-template"
+
+    if llm_mode in {"gemma", "auto"}:
+        try:
+            draft_preview = call_gemma_for_human_review_draft(
+                user_query,
+                search_results,
+                config["gemini_api_key"],
+                model,
+            )
+            response_model = model
+        except Exception as exc:
+            fallback_used = True
+            error = str(exc)
+            response_model = model
+
+    ticket = HumanReviewTicket(
+        ticket_id=f"HITL-{datetime.now().astimezone():%Y%m%d}-{uuid.uuid4().hex[:8].upper()}",
+        route_status="generate_draft_and_escalate",
+        permission_tier="Tier 1",
+        risk_type=route_decision.risk_type,
+        risk_reason=route_decision.risk_reason,
+        intent_summary=route_decision.intent_summary,
+        suggested_owner=suggest_human_review_owner(route_decision.risk_type),
+        original_query=user_query,
+        draft_type="商務澄清信草稿",
+        draft_preview=draft_preview,
+        retrieved_docs=[
+            {
+                "filename": result["filename"],
+                "section_title": result["section_title"],
+                "score": result["score"],
+                "citation": result["citation"],
+            }
+            for result in search_results
+        ],
+        approval_required=True,
+        status="Pending Human Review",
+    )
+
+    return {
+        "ticket": ticket,
+        "search_results": search_results,
+        "answer": "已建立人工審查 ticket 與商務澄清信草稿，需由指定窗口確認後才能對外使用。",
+        "llm_mode": llm_mode,
+        "model": response_model,
+        "fallback_used": fallback_used,
+        "error": error,
+    }
+
+
 def generate_grounded_answer(user_query: str, search_results: list[dict[str, Any]]) -> dict[str, Any]:
     config = load_llm_config()
     llm_mode = config["llm_mode"]
@@ -620,8 +813,9 @@ def build_route_log(
     answer_result: dict[str, Any],
     latency_ms: int,
     action_status: str,
+    ticket: HumanReviewTicket | None = None,
 ) -> dict[str, Any]:
-    return {
+    log = {
         "request_id": f"REQ-{datetime.now().astimezone():%Y%m%d}-{uuid.uuid4().hex[:8].upper()}",
         "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
         "route_status": route_decision.route_status,
@@ -647,7 +841,10 @@ def build_route_log(
         "latency_ms": latency_ms,
         "error": answer_result["error"],
         "action_status": action_status,
+        "ticket_id": ticket.ticket_id if ticket else None,
+        "draft_type": ticket.draft_type if ticket else None,
     }
+    return log
 
 
 def add_user_message(content: str, documents: list[dict[str, Any]]) -> None:
@@ -655,6 +852,7 @@ def add_user_message(content: str, documents: list[dict[str, Any]]) -> None:
     conversation_state = get_conversation_state()
     route_decision = route_user_request(content, conversation_state)
     results: list[dict[str, Any]] = []
+    ticket: HumanReviewTicket | None = None
 
     if route_decision.route_status == "search":
         search_query = content
@@ -664,15 +862,25 @@ def add_user_message(content: str, documents: list[dict[str, Any]]) -> None:
         results = search_knowledge_base(search_query, documents)
         answer_result = generate_grounded_answer(content, results)
         action_status = "answered"
+    elif route_decision.route_status == "generate_draft_and_escalate":
+        hitl_result = generate_draft_and_escalate_skill(content, route_decision, documents)
+        ticket = hitl_result["ticket"]
+        results = hitl_result["search_results"]
+        answer_result = {
+            "answer": hitl_result["answer"],
+            "llm_mode": hitl_result["llm_mode"],
+            "model": hitl_result["model"],
+            "fallback_used": hitl_result["fallback_used"],
+            "error": hitl_result["error"],
+        }
+        action_status = "pending_human_review"
     else:
         config = load_llm_config()
         placeholder_answers = {
-            "generate_draft_and_escalate": "HITL Gate placeholder，下一階段生成商務澄清信草稿",
             "data_ops_dry_run": "Sandbox Gate placeholder，下一階段生成 SQL dry-run preview",
             "out_of_scope": "此問題超出安規認證業務範疇，已採零檢索策略。",
         }
         action_statuses = {
-            "generate_draft_and_escalate": "pending_human_review",
             "data_ops_dry_run": "dry_run_only",
             "out_of_scope": "no_retrieval",
         }
@@ -688,21 +896,25 @@ def add_user_message(content: str, documents: list[dict[str, Any]]) -> None:
     latency_ms = round((time.perf_counter() - started_at) * 1000)
 
     st.session_state.messages.append({"role": "user", "content": content})
-    st.session_state.messages.append({"role": "assistant", "content": answer_result["answer"]})
+    assistant_message: dict[str, Any] = {"role": "assistant", "content": answer_result["answer"]}
+    if ticket:
+        assistant_message["hitl_ticket"] = ticket.model_dump()
+    st.session_state.messages.append(assistant_message)
     st.session_state.last_log = build_route_log(
         route_decision,
         results,
         answer_result,
         latency_ms,
         action_status,
+        ticket,
     )
 
 
 def render_sidebar(documents: list[dict[str, Any]], load_error: str | None) -> None:
     with st.sidebar:
         st.header("Demo 說明")
-        st.write("目前是 Task 5A：先以 deterministic rule-based router 分流，可保留 mock/Gemma 回答層。")
-        st.write("HITL 與 Data Ops 目前只顯示安全 placeholder，尚未執行 Task 5B / 5C。")
+        st.write("目前是 Task 5B：高風險商務請求會進入 HITL Gate，建立人工審查 ticket 與安全草稿。")
+        st.write("Data Ops 仍只顯示 placeholder，尚未執行 Task 5C。")
 
         st.divider()
         st.subheader("知識庫文件")
@@ -751,12 +963,36 @@ def render_document_preview(documents: list[dict[str, Any]], load_error: str | N
             )
 
 
+def render_hitl_ticket(ticket: dict[str, Any]) -> None:
+    st.error("HITL GATE（Tier 1）：偵測到高風險商務承諾或需人工確認事項，已攔截直接回答。")
+    with st.expander("[HITL GATE] 人工審查佇列", expanded=True):
+        st.write(f"**ticket_id:** {ticket['ticket_id']}")
+        st.write(f"**risk_type:** {ticket['risk_type']}")
+        st.write(f"**risk_reason:** {ticket['risk_reason']}")
+        st.write(f"**suggested_owner:** {ticket['suggested_owner']}")
+        st.write(f"**status:** {ticket['status']}")
+        st.text_area(
+            "商務澄清信草稿",
+            value=ticket["draft_preview"],
+            height=360,
+            key=f"draft_preview_{ticket['ticket_id']}",
+        )
+
+        st.markdown("**引用來源 / Retrieved docs**")
+        for result in ticket["retrieved_docs"]:
+            st.caption(
+                f"{result['citation']} | {result['section_title']} | score={result['score']}"
+            )
+
+
 def render_chat(documents: list[dict[str, Any]]) -> None:
     st.subheader("Chat")
 
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.write(message["content"])
+            if message.get("hitl_ticket"):
+                render_hitl_ticket(message["hitl_ticket"])
 
     prompt = st.chat_input("請輸入產品認證或 scoping 相關問題")
     if prompt:
