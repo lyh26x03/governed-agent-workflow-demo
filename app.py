@@ -3,37 +3,48 @@ from __future__ import annotations
 import os
 import re
 import time
+import uuid
+from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import streamlit as st
+from pydantic import BaseModel, Field
 
 
 PROJECT_NAME = "Gintec Copilot"
-DEMO_CAPTION = "Demo v1.1 - 本地 keyword search 搭配 mock/Gemma 回答層，尚未實作真 RAG。"
+DEMO_CAPTION = "Demo v2.1 - deterministic routing 搭配本地 RAG 與安全 gate placeholder。"
 MOCK_REPLY = "這是 Task 1 的假回覆：目前尚未接上 RAG / LLM。"
 DOCS_DIR = Path("data") / "docs"
 DEFAULT_LLM_MODE = "mock"
 DEFAULT_GEMMA_MODEL = "gemma-4-26b-a4b-it"
 
 TEST_QUESTIONS = [
-    "藍牙產品要銷售到歐盟，初步 scoping 需要確認哪些項目？",
-    "同一個藍牙產品如果也要賣到美國，是否要看 FCC Part 15？",
-    "你可以直接保證這個產品一定會通過 FCC 嗎？",
-    "可以現在直接給我 CE 認證正式報價，並承諾兩週完成嗎？",
-    "請幫我直接修改內部系統，把這個案子的審核狀態改成通過。",
-    "請幫我推薦今天晚餐要吃什麼。",
+    "客戶有一款藍牙耳機要出口到歐洲，初步 scoping 要看哪些指令？",
+    "可以保證這個產品一定會通過 FCC 嗎？",
+    "請幫我直接修改內部系統，把審核狀態改成通過。",
+    "請幫我推薦今天晚餐。",
+    "這款耳機適用某個特殊衛星頻段的日本法規嗎？",
+    "那如果是去美國呢？",
 ]
 
 MOCK_LOG = {
-    "route_decision": "mock",
+    "request_id": None,
+    "timestamp": None,
+    "route_status": "mock",
+    "intent_summary": "尚無請求",
     "selected_tool": "none",
+    "permission_tier": "N/A",
+    "risk_type": "None",
+    "risk_reason": "尚未執行路由",
     "llm_mode": DEFAULT_LLM_MODE,
     "model": "mock",
     "fallback_used": False,
     "retrieved_docs": [],
+    "approval_required": False,
     "latency_ms": 0,
     "error": None,
+    "action_status": "idle",
 }
 
 COMMON_KEYWORDS = [
@@ -43,6 +54,10 @@ COMMON_KEYWORDS = [
     "藍牙",
     "歐洲",
     "歐盟",
+    "美國",
+    "日本",
+    "法規",
+    "耳機",
     "RED",
     "FCC",
     "Part 15",
@@ -53,11 +68,197 @@ COMMON_KEYWORDS = [
 ]
 
 
+class RouteDecision(BaseModel):
+    route_status: Literal[
+        "search",
+        "generate_draft_and_escalate",
+        "data_ops_dry_run",
+        "out_of_scope",
+    ]
+    intent_summary: str
+    selected_tool: str
+    permission_tier: Literal["Tier 0", "Tier 1", "Tier 3", "N/A"]
+    risk_type: Literal[
+        "None",
+        "Guarantee/Commitment",
+        "Commercial/Pricing",
+        "System Modification",
+        "Out of Scope",
+        "Low Confidence",
+    ]
+    risk_reason: str
+    retrieval_required: bool
+    approval_required: bool
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
 def initialize_state() -> None:
     if "messages" not in st.session_state:
         st.session_state.messages = []
     if "last_log" not in st.session_state:
         st.session_state.last_log = MOCK_LOG.copy()
+
+
+def route_user_request(user_query: str, conversation_state: dict[str, Any] | None = None) -> RouteDecision:
+    normalized_query = re.sub(r"\s+", "", user_query).lower()
+    conversation_state = conversation_state or {}
+    previous_user_query = str(conversation_state.get("previous_user_query", "")).strip()
+
+    system_modification_terms = [
+        "修改內部系統",
+        "修改系統",
+        "修改db",
+        "修改資料庫",
+        "更新資料庫",
+        "寫入資料庫",
+        "審核狀態改成通過",
+        "狀態改成通過",
+        "直接改成通過",
+    ]
+    guarantee_terms = ["保證", "一定會通過", "一定通過", "承諾通過", "對外承諾", "正式承諾"]
+    commercial_terms = ["正式報價", "報價單", "承諾交期", "承諾兩週", "商務承諾"]
+    compliance_conclusion_terms = ["合規結論", "正式合規", "確認合法", "保證合法", "一定符合"]
+    out_of_scope_terms = [
+        "晚餐",
+        "午餐",
+        "早餐",
+        "宵夜",
+        "推薦餐廳",
+        "閒聊",
+        "講笑話",
+        "天氣",
+        "電影推薦",
+    ]
+    certification_domain_terms = [
+        "安規",
+        "法規",
+        "認證",
+        "合規",
+        "sop",
+        "scoping",
+        "fcc",
+        "ce",
+        "red",
+        "emc",
+        "藍牙",
+        "無線",
+        "頻段",
+        "衛星",
+        "歐盟",
+        "歐洲",
+        "美國",
+        "日本",
+        "出口",
+        "指令",
+        "測試",
+        "樣品",
+    ]
+
+    if any(term in normalized_query for term in system_modification_terms):
+        return RouteDecision(
+            route_status="data_ops_dry_run",
+            intent_summary="要求修改內部系統、資料庫或審核狀態",
+            selected_tool="data_ops_sandbox_skill",
+            permission_tier="Tier 3",
+            risk_type="System Modification",
+            risk_reason="請求涉及內部系統或資料狀態修改，只能進入 sandbox dry-run 流程。",
+            retrieval_required=False,
+            approval_required=True,
+            confidence=0.99,
+        )
+
+    if any(term in normalized_query for term in guarantee_terms):
+        return RouteDecision(
+            route_status="generate_draft_and_escalate",
+            intent_summary="要求保證通過、正式承諾或對外承諾",
+            selected_tool="generate_draft_and_escalate_skill",
+            permission_tier="Tier 1",
+            risk_type="Guarantee/Commitment",
+            risk_reason="AI 不可直接保證認證結果或代表公司做出正式承諾。",
+            retrieval_required=True,
+            approval_required=True,
+            confidence=0.99,
+        )
+
+    if any(term in normalized_query for term in commercial_terms):
+        return RouteDecision(
+            route_status="generate_draft_and_escalate",
+            intent_summary="要求正式報價、交期或商務承諾",
+            selected_tool="generate_draft_and_escalate_skill",
+            permission_tier="Tier 1",
+            risk_type="Commercial/Pricing",
+            risk_reason="正式報價與商務承諾需要人工審核。",
+            retrieval_required=True,
+            approval_required=True,
+            confidence=0.98,
+        )
+
+    if any(term in normalized_query for term in compliance_conclusion_terms):
+        return RouteDecision(
+            route_status="generate_draft_and_escalate",
+            intent_summary="要求正式合規或法律結論",
+            selected_tool="generate_draft_and_escalate_skill",
+            permission_tier="Tier 1",
+            risk_type="Guarantee/Commitment",
+            risk_reason="正式合規結論不可由 AI 直接對外確認。",
+            retrieval_required=True,
+            approval_required=True,
+            confidence=0.95,
+        )
+
+    if any(term in normalized_query for term in out_of_scope_terms):
+        return RouteDecision(
+            route_status="out_of_scope",
+            intent_summary="非安規認證業務範疇的生活或閒聊問題",
+            selected_tool="out_of_scope_guardrail",
+            permission_tier="N/A",
+            risk_type="Out of Scope",
+            risk_reason="問題與安規、認證、法規或內部流程無關。",
+            retrieval_required=False,
+            approval_required=False,
+            confidence=0.99,
+        )
+
+    if not any(term in normalized_query for term in certification_domain_terms):
+        return RouteDecision(
+            route_status="out_of_scope",
+            intent_summary="未偵測到安規、認證、法規或 scoping 業務意圖",
+            selected_tool="out_of_scope_guardrail",
+            permission_tier="N/A",
+            risk_type="Out of Scope",
+            risk_reason="問題沒有安規認證領域訊號，因此不執行知識庫檢索。",
+            retrieval_required=False,
+            approval_required=False,
+            confidence=0.85,
+        )
+
+    intent_summary = "一般法規、認證、SOP 或 scoping 知識查詢"
+    if previous_user_query and re.search(r"^(那|如果|那如果|改成|換成)", user_query.strip()):
+        intent_summary = f"延續前一題「{build_preview(previous_user_query, 40)}」的法規或 scoping 查詢"
+
+    return RouteDecision(
+        route_status="search",
+        intent_summary=intent_summary,
+        selected_tool="search_knowledge_base_skill",
+        permission_tier="Tier 0",
+        risk_type="None",
+        risk_reason="可透過本地知識庫提供初步資訊，不涉及承諾或系統修改。",
+        retrieval_required=True,
+        approval_required=False,
+        confidence=0.85,
+    )
+
+
+def get_conversation_state() -> dict[str, Any]:
+    previous_user_queries = [
+        message["content"]
+        for message in st.session_state.messages
+        if message.get("role") == "user"
+    ]
+    return {
+        "previous_user_query": previous_user_queries[-1] if previous_user_queries else "",
+        "recent_user_queries": previous_user_queries[-3:],
+    }
 
 
 def extract_title(content: str, fallback: str) -> str:
@@ -73,6 +274,18 @@ def build_preview(content: str, limit: int = 120) -> str:
     if len(normalized) <= limit:
         return normalized
     return f"{normalized[:limit]}..."
+
+
+def clean_markdown_text(content: str) -> str:
+    cleaned_lines: list[str] = []
+    for line in content.splitlines():
+        stripped_line = re.sub(r"^\s*#{1,6}\s*", "", line).strip()
+        if stripped_line:
+            cleaned_lines.append(stripped_line)
+
+    normalized = " ".join(cleaned_lines)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized
 
 
 def load_markdown_documents(docs_dir: Path = DOCS_DIR) -> tuple[list[dict[str, Any]], str | None]:
@@ -128,7 +341,11 @@ def split_markdown_sections(document: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def build_chunk(document: dict[str, Any], section_title: str, lines: list[str]) -> dict[str, Any]:
-    content = "\n".join(lines).strip()
+    raw_content = "\n".join(lines).strip()
+    body_lines = [line for line in lines if re.match(r"^\s*#{1,6}\s+", line) is None]
+    clean_content = clean_markdown_text("\n".join(body_lines))
+    if not clean_content:
+        clean_content = clean_markdown_text(raw_content)
     section_match = re.match(r"^(\d+(?:\.\d+)*)", section_title)
     section_ref = section_match.group(1) if section_match else section_title
 
@@ -137,7 +354,9 @@ def build_chunk(document: dict[str, Any], section_title: str, lines: list[str]) 
         "filename": document["filename"],
         "title": document["title"],
         "section_title": section_title,
-        "content": content,
+        "raw_content": raw_content,
+        "clean_content": clean_content,
+        "content": raw_content,
         "score": 0,
         "citation": f"[引用: {document['filename']} §{section_ref}]",
     }
@@ -159,7 +378,7 @@ def extract_query_terms(query: str) -> list[str]:
 
 def score_chunk(query_terms: list[str], chunk: dict[str, Any]) -> int:
     searchable_title = f"{chunk['title']} {chunk['section_title']}".lower()
-    searchable_content = chunk["content"].lower()
+    searchable_content = chunk["clean_content"].lower()
     score = 0
 
     for term in query_terms:
@@ -231,14 +450,58 @@ def load_llm_config() -> dict[str, str]:
 
 def generate_mock_answer(search_results: list[dict[str, Any]]) -> str:
     if not search_results:
-        return "目前知識庫沒有找到足夠相關的段落，無法提供可靠回答，建議補充文件或轉交人工確認。"
+        return "目前知識庫不足，無法可靠回答。"
 
-    response_lines = ["根據目前知識庫檢索結果，初步整理如下："]
-    for index, result in enumerate(search_results[:3], start=1):
-        preview = build_preview(result["content"], limit=120)
-        response_lines.append(f"{index}. {preview} {result['citation']}")
+    return "\n".join(build_answer_point(result) for result in search_results[:3])
 
-    return "\n".join(response_lines)
+
+def clean_answer_line(text: str) -> str:
+    stripped = text.strip()
+    stripped = re.sub(r"^\s*#{1,6}\s*", "", stripped)
+    stripped = re.sub(r"^\s*[-*•]\s*", "", stripped)
+    stripped = re.sub(r"^\s*\d+[.)]\s*", "", stripped)
+    stripped = re.sub(r"\s+", " ", stripped).strip()
+    return stripped
+
+
+def build_answer_point(result: dict[str, Any]) -> str:
+    raw_section_title = clean_answer_line(result["section_title"])
+    section_title = re.sub(r"^\d+(?:\.\d+)*\s*", "", raw_section_title).strip() or raw_section_title
+    content = result["clean_content"].replace("|", " ").replace("`", "")
+    content = re.sub(rf"^{re.escape(raw_section_title)}\s*", "", content).strip()
+    content = re.sub(rf"^{re.escape(section_title)}\s*", "", content).strip()
+
+    content = re.sub(r"\s*-\s*", "；", content)
+    content = re.sub(r"\s+", " ", content).strip("：:；， ")
+    snippet = build_preview(content, limit=78)
+    if not snippet:
+        snippet = section_title
+
+    return f"- {section_title}：{snippet} {result['citation']}"
+
+
+def format_bulleted_answer(lines: list[str], search_results: list[dict[str, Any]]) -> str:
+    if not search_results:
+        return "目前知識庫不足，無法可靠回答。"
+
+    insufficient_markers = ["目前知識庫不足，無法可靠回答", "資料不足", "無法可靠回答"]
+    joined_lines = " ".join(lines)
+    if any(marker in joined_lines for marker in insufficient_markers):
+        return "目前知識庫不足，無法可靠回答。"
+
+    formatted_lines: list[str] = []
+    for index, raw_line in enumerate(lines[:3]):
+        clean_line = clean_answer_line(raw_line)
+        if not clean_line:
+            continue
+
+        limited_line = build_preview(clean_line, limit=110)
+        formatted_lines.append(f"- {limited_line} {search_results[index]['citation']}")
+
+    if not formatted_lines:
+        return "目前知識庫不足，無法可靠回答。"
+
+    return "\n".join(formatted_lines)
 
 
 def build_gemma_prompt(user_query: str, search_results: list[dict[str, Any]]) -> str:
@@ -251,8 +514,8 @@ def build_gemma_prompt(user_query: str, search_results: list[dict[str, Any]]) ->
                     f"filename: {result['filename']}",
                     f"section_title: {result['section_title']}",
                     f"citation: {result['citation']}",
-                    "content:",
-                    result["content"],
+                    "clean_content:",
+                    result["clean_content"],
                 ]
             )
         )
@@ -262,11 +525,14 @@ def build_gemma_prompt(user_query: str, search_results: list[dict[str, Any]]) ->
     return f"""你是企業內部安規認證知識助手。
 只能根據提供的「檢索結果」回答。
 使用繁體中文。
-回答要簡潔、條列化。
-每個關鍵結論後面都必須附 citation。
+回答最多 3 個 bullet。
+每個 bullet 最多 2 行。
+不要使用 #、##、### Markdown heading。
+不要直接貼整段原文。
 不可補充檢索結果以外的知識。
 不可說「一定通過」「保證合法」「可直接對客戶承諾」。
-若檢索結果不足，必須明確說資料不足，不可猜測。
+若檢索結果不足，必須明確說「目前知識庫不足，無法可靠回答」。
+請只輸出 bullet 內容本身，不要自行補 citation，我會在程式端附上 citation。
 
 使用者問題：
 {user_query}
@@ -292,13 +558,23 @@ def call_gemma(user_query: str, search_results: list[dict[str, Any]], api_key: s
     if not text:
         raise ValueError("Gemma 回應為空。")
 
-    return text
+    candidate_lines = [line for line in text.splitlines() if clean_answer_line(line)]
+    return format_bulleted_answer(candidate_lines, search_results)
 
 
 def generate_grounded_answer(user_query: str, search_results: list[dict[str, Any]]) -> dict[str, Any]:
     config = load_llm_config()
     llm_mode = config["llm_mode"]
     model = config["gemma_model"]
+
+    if not search_results:
+        return {
+            "answer": "目前知識庫不足，無法可靠回答。",
+            "llm_mode": "mock" if llm_mode == "mock" else llm_mode,
+            "model": "mock" if llm_mode == "mock" else model,
+            "fallback_used": False,
+            "error": None,
+        }
 
     if llm_mode == "mock":
         return {
@@ -338,10 +614,24 @@ def generate_grounded_answer(user_query: str, search_results: list[dict[str, Any
         }
 
 
-def build_search_log(results: list[dict[str, Any]], answer_result: dict[str, Any], latency_ms: int) -> dict[str, Any]:
+def build_route_log(
+    route_decision: RouteDecision,
+    results: list[dict[str, Any]],
+    answer_result: dict[str, Any],
+    latency_ms: int,
+    action_status: str,
+) -> dict[str, Any]:
     return {
-        "route_decision": "search_then_answer",
-        "selected_tool": "search_knowledge_base",
+        "request_id": f"REQ-{datetime.now().astimezone():%Y%m%d}-{uuid.uuid4().hex[:8].upper()}",
+        "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "route_status": route_decision.route_status,
+        "intent_summary": route_decision.intent_summary,
+        "selected_tool": route_decision.selected_tool,
+        "permission_tier": route_decision.permission_tier,
+        "risk_type": route_decision.risk_type,
+        "risk_reason": route_decision.risk_reason,
+        "retrieval_required": route_decision.retrieval_required,
+        "approval_required": route_decision.approval_required,
         "llm_mode": answer_result["llm_mode"],
         "model": answer_result["model"],
         "fallback_used": answer_result["fallback_used"],
@@ -350,30 +640,69 @@ def build_search_log(results: list[dict[str, Any]], answer_result: dict[str, Any
                 "filename": result["filename"],
                 "section_title": result["section_title"],
                 "score": result["score"],
+                "citation": result["citation"],
             }
             for result in results
         ],
         "latency_ms": latency_ms,
         "error": answer_result["error"],
+        "action_status": action_status,
     }
 
 
 def add_user_message(content: str, documents: list[dict[str, Any]]) -> None:
     started_at = time.perf_counter()
-    results = search_knowledge_base(content, documents)
-    answer_result = generate_grounded_answer(content, results)
+    conversation_state = get_conversation_state()
+    route_decision = route_user_request(content, conversation_state)
+    results: list[dict[str, Any]] = []
+
+    if route_decision.route_status == "search":
+        search_query = content
+        previous_user_query = conversation_state.get("previous_user_query", "")
+        if previous_user_query and route_decision.intent_summary.startswith("延續前一題"):
+            search_query = f"{previous_user_query} {content}"
+        results = search_knowledge_base(search_query, documents)
+        answer_result = generate_grounded_answer(content, results)
+        action_status = "answered"
+    else:
+        config = load_llm_config()
+        placeholder_answers = {
+            "generate_draft_and_escalate": "HITL Gate placeholder，下一階段生成商務澄清信草稿",
+            "data_ops_dry_run": "Sandbox Gate placeholder，下一階段生成 SQL dry-run preview",
+            "out_of_scope": "此問題超出安規認證業務範疇，已採零檢索策略。",
+        }
+        action_statuses = {
+            "generate_draft_and_escalate": "pending_human_review",
+            "data_ops_dry_run": "dry_run_only",
+            "out_of_scope": "no_retrieval",
+        }
+        answer_result = {
+            "answer": placeholder_answers[route_decision.route_status],
+            "llm_mode": config["llm_mode"],
+            "model": "deterministic-rule-router",
+            "fallback_used": False,
+            "error": None,
+        }
+        action_status = action_statuses[route_decision.route_status]
+
     latency_ms = round((time.perf_counter() - started_at) * 1000)
 
     st.session_state.messages.append({"role": "user", "content": content})
     st.session_state.messages.append({"role": "assistant", "content": answer_result["answer"]})
-    st.session_state.last_log = build_search_log(results, answer_result, latency_ms)
+    st.session_state.last_log = build_route_log(
+        route_decision,
+        results,
+        answer_result,
+        latency_ms,
+        action_status,
+    )
 
 
 def render_sidebar(documents: list[dict[str, Any]], load_error: str | None) -> None:
     with st.sidebar:
         st.header("Demo 說明")
-        st.write("目前是 Task 4A：加入 LLM 回答層，預設使用 mock，可切換 Gemma。")
-        st.write("尚未加入 RAG、Tool Calling、轉人工流程或向量資料庫。")
+        st.write("目前是 Task 5A：先以 deterministic rule-based router 分流，可保留 mock/Gemma 回答層。")
+        st.write("HITL 與 Data Ops 目前只顯示安全 placeholder，尚未執行 Task 5B / 5C。")
 
         st.divider()
         st.subheader("知識庫文件")
