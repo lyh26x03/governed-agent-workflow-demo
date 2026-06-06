@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
@@ -1040,6 +1041,77 @@ def add_user_message(content: str, documents: list[dict[str, Any]]) -> None:
     )
 
 
+def render_log_panel(last_log: dict[str, Any]) -> None:
+    json_text = json.dumps(last_log, ensure_ascii=False, indent=2)
+
+    with st.expander("Governance Trace", expanded=True):
+        st.markdown("**治理決策摘要**")
+        st.text(
+            "\n".join(
+                [
+                    "[ROUTE] 意圖判定：",
+                    str(last_log.get("intent_summary")),
+                    f"狀態：{last_log.get('route_status')}",
+                    "",
+                    "[PLAN] 決策路徑：",
+                    f"selected_tool = {last_log.get('selected_tool')}",
+                    "",
+                    "[GUARD] 合規評估：",
+                    f"權限等級：{last_log.get('permission_tier')}",
+                    f"風險類型：{last_log.get('risk_type')}",
+                    f"攔截原因：{last_log.get('risk_reason')}",
+                    "",
+                    "[ACTION] 動作結果：",
+                    f"approval_required = {last_log.get('approval_required')}",
+                    f"action_status = {last_log.get('action_status')}",
+                    "",
+                    "[PERF] 技術指標：",
+                    f"model = {last_log.get('model')}",
+                    f"latency_ms = {last_log.get('latency_ms')}",
+                    f"fallback_used = {last_log.get('fallback_used')}",
+                ]
+            )
+        )
+
+        if last_log.get("ticket_id"):
+            st.text(
+                "\n".join(
+                    [
+                        "[HITL]",
+                        f"ticket_id = {last_log.get('ticket_id')}",
+                        f"draft_type = {last_log.get('draft_type')}",
+                    ]
+                )
+            )
+
+        if last_log.get("sandbox_id"):
+            st.text(
+                "\n".join(
+                    [
+                        "[SANDBOX]",
+                        f"sandbox_id = {last_log.get('sandbox_id')}",
+                        f"current_action_tier = {last_log.get('current_action_tier')}",
+                        f"sql_validation_status = {last_log.get('sql_validation_status')}",
+                        f"approval_queue = {last_log.get('approval_queue')}",
+                    ]
+                )
+            )
+
+    with st.expander("Engineering Metrics JSON", expanded=True):
+        st.code(json_text, language="json")
+
+    st.download_button(
+        label="下載 last_log.json",
+        data=json_text,
+        file_name="gintec_copilot_last_log.json",
+        mime="application/json",
+        use_container_width=True,
+    )
+
+    with st.expander("Raw st.json view", expanded=False):
+        st.json(last_log)
+
+
 def render_sidebar(documents: list[dict[str, Any]], load_error: str | None) -> None:
     with st.sidebar:
         st.header("Demo 說明")
@@ -1065,7 +1137,7 @@ def render_sidebar(documents: list[dict[str, Any]], load_error: str | None) -> N
 
         st.divider()
         st.subheader("Log Panel")
-        st.json(st.session_state.last_log)
+        render_log_panel(st.session_state.last_log)
 
         if st.button("清除對話", use_container_width=True):
             st.session_state.messages = []
