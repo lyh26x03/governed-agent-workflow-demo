@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 
 PROJECT_NAME = "Gintec Copilot"
-DEMO_CAPTION = "Demo v2.1 - deterministic routing、本地 RAG、HITL 與 Data Ops Sandbox。"
+DEMO_CAPTION = "Demo v2.1 - governed routing、本地 RAG、HITL、Data Ops Sandbox、Evidence Gate 與 Audit Log。"
 MOCK_REPLY = "這是 Task 1 的假回覆：目前尚未接上 RAG / LLM。"
 DOCS_DIR = Path("data") / "docs"
 DEFAULT_LLM_MODE = "mock"
@@ -1450,7 +1450,8 @@ def render_log_panel(last_log: dict[str, Any]) -> None:
 def render_sidebar(documents: list[dict[str, Any]], load_error: str | None) -> None:
     with st.sidebar:
         st.header("Demo 說明")
-        st.write("目前完成 Task 5C：高風險商務請求進入 HITL，系統修改意圖進入 Data Ops Sandbox。")
+        st.write("目前完成 Governed Agentic Workflow Demo：RAG、HITL、Data Ops Sandbox、Evidence Gate 與治理日誌。")
+        st.write("系統會依請求意圖進行路由；高風險承諾轉人工，系統修改進入 dry-run sandbox，證據不足則升級為 Low Confidence 人工審查。")
         st.write("所有資料操作僅產生 fake sandbox dry-run preview，不連接真實資料庫。")
 
         st.divider()
