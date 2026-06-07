@@ -69,6 +69,14 @@ MOCK_LOG = {
     "current_action_tier": None,
     "sql_validation_status": "N/A",
     "approval_queue": None,
+    "evidence_sufficient": None,
+    "evidence_confidence": None,
+    "evidence_hit_count": None,
+    "evidence_top_score": None,
+    "evidence_coverage": None,
+    "evidence_missing_terms": None,
+    "evidence_reason": None,
+    "evidence_judge_used": None,
 }
 
 COMMON_KEYWORDS = [
@@ -89,6 +97,26 @@ COMMON_KEYWORDS = [
     "測試",
     "認證",
     "scoping",
+]
+
+# === 情境五 Self-Correction Loop：證據評估設定 ===
+# top chunk 的原始分數必須清過此底線（依實際知識庫校準，見 README）
+USE_LLM_EVIDENCE_JUDGE = False
+EVIDENCE_SCORE_FLOOR = 3
+# 「具鑑別力的查詢詞」至少要有這個比例落在檢索內容裡，才算有依據
+EVIDENCE_COVERAGE_THRESHOLD = 0.5
+EVIDENCE_MIN_HITS = 1
+
+# 太通用、單獨命中不足以證明主題相關的詞（不計入 coverage 分母）
+EVIDENCE_GENERIC_TERMS = {
+    "耳機", "產品", "法規", "認證", "測試", "資訊", "樣品",
+    "適用", "需要", "哪些", "什麼", "可以", "這款",
+}
+
+# 具鑑別力的訊號詞（中文無空白，retrieval tokenizer 會漏掉，這裡補上）
+EVIDENCE_SIGNAL_TERMS = [
+    "衛星", "頻段", "日本", "美國", "歐洲", "歐盟",
+    "藍牙", "無線", "scoping", "fcc", "part 15", "red", "ce", "emc",
 ]
 
 
@@ -125,7 +153,7 @@ class HumanReviewTicket(BaseModel):
     intent_summary: str
     suggested_owner: str
     original_query: str
-    draft_type: Literal["商務澄清信草稿"]
+    draft_type: Literal["商務澄清信草稿", "知識庫不足通知"]
     draft_preview: str
     retrieved_docs: list[dict[str, Any]]
     approval_required: bool
@@ -146,6 +174,20 @@ class DataOpsSandboxResult(BaseModel):
     approval_required: bool
     approval_queue: Literal["Supervisor Approval Queue"]
     action_status: Literal["Dry-run only"]
+
+
+class EvidenceAssessment(BaseModel):
+    """情境五的核心：檢索後對證據強度的顯式評估結果。"""
+    sufficient: bool
+    confidence: float = Field(ge=0.0, le=1.0)
+    reason: str
+    top_score: int
+    hit_count: int
+    coverage: float = Field(ge=0.0, le=1.0)
+    matched_terms: list[str]
+    missing_terms: list[str]
+    judge_used: bool = False
+    judge_verdict: str | None = None
 
 
 def initialize_state() -> None:
@@ -485,6 +527,202 @@ def format_search_response(results: list[dict[str, Any]]) -> str:
     return "\n".join(response_lines)
 
 
+def extract_evidence_terms(query: str) -> list[str]:
+    """抽出查詢中『具主題訊號』的詞，獨立於 retrieval tokenizer，
+    確保像「衛星」這種中文無空白詞也能被納入 coverage 計算。"""
+    lower_query = query.lower()
+    pool = COMMON_KEYWORDS + EVIDENCE_SIGNAL_TERMS
+    terms = {keyword.lower() for keyword in pool if keyword.lower() in lower_query}
+    return sorted(terms)
+
+
+def build_evidence_judge_prompt(query: str, results: list[dict[str, Any]]) -> str:
+    context_lines = []
+    for index, result in enumerate(results[:3], start=1):
+        context_lines.append(
+            f"[{index}] {result['filename']} / {result['section_title']}：" +
+            build_preview(result["clean_content"], 220)
+        )
+    context_text = "\n".join(context_lines) if context_lines else "（無任何檢索結果）"
+
+    return f"""你是企業知識庫的「證據充分性審查員」。
+只根據下方檢索段落，判斷是否足以對使用者問題給出有依據、可信的初步回答。
+保守原則：只要檢索段落沒有正面涵蓋問題的關鍵主題，就視為不足。
+你只能輸出 JSON，不要任何多餘文字或 Markdown，格式如下：
+{{"sufficient": true/false, "confidence": 0.0~1.0, "reason": "一句中文理由"}}
+
+使用者問題：
+{query}
+
+檢索段落：
+{context_text}
+"""
+
+
+def call_evidence_judge(
+    query: str,
+    results: list[dict[str, Any]],
+    api_key: str,
+    model: str,
+) -> tuple[bool, float, str]:
+    """LLM-as-judge：回傳 (sufficient, confidence, reason)。失敗則由呼叫端忽略。"""
+    if not api_key:
+        raise ValueError("缺少 GEMINI_API_KEY，無法呼叫 evidence judge。")
+
+    from google import genai
+
+    client = genai.Client(api_key=api_key)
+    response = client.models.generate_content(
+        model=model,
+        contents=build_evidence_judge_prompt(query, results),
+    )
+    text = (getattr(response, "text", None) or "").strip()
+    text = re.sub(r"^```(?:json)?|```$", "", text, flags=re.MULTILINE).strip()
+    parsed = json.loads(text)
+    sufficient = bool(parsed.get("sufficient", False))
+    confidence = float(parsed.get("confidence", 0.0))
+    confidence = min(max(confidence, 0.0), 1.0)
+    reason = str(parsed.get("reason", "")).strip() or "judge 未提供理由"
+    return sufficient, confidence, reason
+
+
+def load_evidence_config() -> dict[str, bool | float | int]:
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv()
+    except Exception:
+        pass
+
+    judge_value = os.getenv("USE_LLM_EVIDENCE_JUDGE", str(USE_LLM_EVIDENCE_JUDGE)).strip().lower()
+    use_llm_judge = judge_value in {"1", "true", "yes", "on"}
+
+    try:
+        score_floor = max(0, int(os.getenv("EVIDENCE_SCORE_FLOOR", str(EVIDENCE_SCORE_FLOOR))))
+    except ValueError:
+        score_floor = EVIDENCE_SCORE_FLOOR
+
+    try:
+        coverage_threshold = float(
+            os.getenv("EVIDENCE_COVERAGE_THRESHOLD", str(EVIDENCE_COVERAGE_THRESHOLD))
+        )
+        coverage_threshold = min(max(coverage_threshold, 0.0), 1.0)
+    except ValueError:
+        coverage_threshold = EVIDENCE_COVERAGE_THRESHOLD
+
+    return {
+        "use_llm_judge": use_llm_judge,
+        "score_floor": score_floor,
+        "coverage_threshold": coverage_threshold,
+    }
+
+
+def evaluate_evidence(
+    query: str,
+    results: list[dict[str, Any]],
+    llm_mode: str = "mock",
+    api_key: str = "",
+    model: str = DEFAULT_GEMMA_MODEL,
+) -> EvidenceAssessment:
+    """情境五 self-correction 的關鍵步驟：檢索『之後』顯式評估證據強度。
+
+    設計：deterministic 門檻是永遠生效的底線（mock 模式也能重現）；
+    LLM judge 為可選的彈性層，且『只能加嚴、不能放寬』——
+    judge 認為不足可推翻 deterministic 的『足夠』，但 judge 認為足夠
+    不會推翻 deterministic 的『不足』。這讓 demo 保持 fail-safe。
+    """
+    evidence_config = load_evidence_config()
+    use_llm_judge = bool(evidence_config["use_llm_judge"])
+    score_floor = int(evidence_config["score_floor"])
+    coverage_threshold = float(evidence_config["coverage_threshold"])
+    top_score = int(results[0]["score"]) if results else 0
+    hit_count = len(results)
+
+    # --- 訊號一：具鑑別力查詢詞的覆蓋率 ---
+    evidence_terms = extract_evidence_terms(query)
+    distinctive_terms = [t for t in evidence_terms if t not in EVIDENCE_GENERIC_TERMS]
+    retrieved_text = " ".join(result["clean_content"].lower() for result in results)
+    matched = [t for t in distinctive_terms if t in retrieved_text]
+    missing = [t for t in distinctive_terms if t not in retrieved_text]
+    coverage = (len(matched) / len(distinctive_terms)) if distinctive_terms else (1.0 if results else 0.0)
+
+    # --- deterministic 底線判定 ---
+    det_sufficient = (
+        hit_count >= EVIDENCE_MIN_HITS
+        and top_score >= score_floor
+        and coverage >= coverage_threshold
+    )
+    if not results:
+        det_reason = "檢索無任何命中文件，知識庫依據不足。"
+    elif top_score < score_floor:
+        det_reason = f"最高檢索分數 {top_score} 低於門檻 {score_floor}，依據不足。"
+    elif coverage < coverage_threshold:
+        det_reason = (
+            f"關鍵查詢詞覆蓋率 {coverage:.0%} 低於門檻 "
+            f"{coverage_threshold:.0%}（未命中：{', '.join(missing) or '無'}）。"
+        )
+    else:
+        det_reason = f"檢索分數 {top_score} 與關鍵詞覆蓋率 {coverage:.0%} 均達門檻。"
+
+    sufficient = det_sufficient
+    confidence = round(min(coverage, top_score / max(score_floor * 2, 1)), 3) if results else 0.0
+    reason = det_reason
+    judge_used = False
+    judge_verdict = None
+
+    # --- 可選彈性層：LLM judge（只能加嚴）---
+    if use_llm_judge and llm_mode in {"gemma", "auto"} and api_key:
+        try:
+            judge_ok, judge_conf, judge_reason = call_evidence_judge(query, results, api_key, model)
+            judge_used = True
+            judge_verdict = f"sufficient={judge_ok}, confidence={judge_conf}, reason={judge_reason}"
+            if det_sufficient and not judge_ok:
+                # judge 加嚴：推翻 deterministic 的「足夠」
+                sufficient = False
+                confidence = min(confidence, judge_conf)
+                reason = f"deterministic 通過但 LLM judge 判定依據不足：{judge_reason}"
+            elif det_sufficient and judge_ok:
+                confidence = round((confidence + judge_conf) / 2, 3)
+                reason = f"{det_reason}（LLM judge 亦判定足夠）"
+        except Exception as exc:  # judge 失敗不影響底線
+            judge_used = False
+            judge_verdict = f"judge 呼叫失敗，採用 deterministic 結果：{exc}"
+
+    return EvidenceAssessment(
+        sufficient=sufficient,
+        confidence=confidence,
+        reason=reason,
+        top_score=top_score,
+        hit_count=hit_count,
+        coverage=round(coverage, 3),
+        matched_terms=matched,
+        missing_terms=missing,
+        judge_used=judge_used,
+        judge_verdict=judge_verdict,
+    )
+
+
+def build_low_confidence_route(
+    original: RouteDecision,
+    evidence: EvidenceAssessment,
+) -> RouteDecision:
+    """把初判的 search 覆寫成 Low Confidence 的 Tier 1 escalation。"""
+    return RouteDecision(
+        route_status="generate_draft_and_escalate",
+        intent_summary=(
+            "知識庫依據不足，已從 search 自動升級為人工審查路由"
+            f"（原意圖：{original.intent_summary}）"
+        ),
+        selected_tool="generate_draft_and_escalate_skill",
+        permission_tier="Tier 1",
+        risk_type="Low Confidence",
+        risk_reason=evidence.reason,
+        retrieval_required=True,
+        approval_required=True,
+        confidence=evidence.confidence,
+    )
+
+
 def load_llm_config() -> dict[str, str]:
     try:
         from dotenv import load_dotenv
@@ -639,6 +877,28 @@ def build_human_review_draft_template(user_query: str) -> str:
 謝謝。"""
 
 
+def build_low_confidence_draft_template(user_query: str, evidence: EvidenceAssessment | None = None) -> str:
+    missing_hint = ""
+    if evidence and evidence.missing_terms:
+        missing_hint = f"\n（系統偵測到未涵蓋的關鍵主題：{', '.join(evidence.missing_terms)}）"
+    return f"""主旨：知識庫依據不足，建議補充文件後再評估
+
+您好，
+
+針對您的問題，本系統在目前的內部知識庫中，尚未檢索到足以提供可信依據的相關文件。
+檢索信心分數低於設定門檻，為避免在依據不足的情況下做出可能誤導的回覆，系統已自動將此問題轉為人工審查。{missing_hint}
+
+原始問題：
+{user_query}
+
+建議後續處理：
+1. 由資深認證工程師確認此主題是否屬於現行法規／SOP 範圍。
+2. 補充對應的法規或測試文件至知識庫後重新查詢。
+3. 在補件完成前，請勿將本系統回覆作為對外依據。
+
+本通知為人工審查草稿，尚未經過確認。"""
+
+
 def build_human_review_gemma_prompt(user_query: str, search_results: list[dict[str, Any]]) -> str:
     context_lines = []
     for result in search_results[:5]:
@@ -732,6 +992,8 @@ def generate_draft_and_escalate_skill(
     user_query: str,
     route_decision: RouteDecision,
     documents: list[dict[str, Any]],
+    low_confidence: bool = False,
+    evidence: EvidenceAssessment | None = None,
 ) -> dict[str, Any]:
     search_results = prioritize_human_review_results(
         search_knowledge_base(user_query, documents, top_k=12)
@@ -739,24 +1001,31 @@ def generate_draft_and_escalate_skill(
     config = load_llm_config()
     llm_mode = config["llm_mode"]
     model = config["gemma_model"]
-    draft_preview = build_human_review_draft_template(user_query)
     fallback_used = False
     error = None
-    response_model = "deterministic-template"
 
-    if llm_mode in {"gemma", "auto"}:
-        try:
-            draft_preview = call_gemma_for_human_review_draft(
-                user_query,
-                search_results,
-                config["gemini_api_key"],
-                model,
-            )
-            response_model = model
-        except Exception as exc:
-            fallback_used = True
-            error = str(exc)
-            response_model = model
+    if low_confidence:
+        # 知識庫不足：用 deterministic 的「不足通知」草稿，不走商務信驗證。
+        draft_type = "知識庫不足通知"
+        draft_preview = build_low_confidence_draft_template(user_query, evidence)
+        response_model = "deterministic-template"
+    else:
+        draft_type = "商務澄清信草稿"
+        draft_preview = build_human_review_draft_template(user_query)
+        response_model = "deterministic-template"
+        if llm_mode in {"gemma", "auto"}:
+            try:
+                draft_preview = call_gemma_for_human_review_draft(
+                    user_query,
+                    search_results,
+                    config["gemini_api_key"],
+                    model,
+                )
+                response_model = model
+            except Exception as exc:
+                fallback_used = True
+                error = str(exc)
+                response_model = model
 
     ticket = HumanReviewTicket(
         ticket_id=f"HITL-{datetime.now().astimezone():%Y%m%d}-{uuid.uuid4().hex[:8].upper()}",
@@ -767,14 +1036,16 @@ def generate_draft_and_escalate_skill(
         intent_summary=route_decision.intent_summary,
         suggested_owner=suggest_human_review_owner(route_decision.risk_type),
         original_query=user_query,
-        draft_type="商務澄清信草稿",
+        draft_type=draft_type,
         draft_preview=draft_preview,
         retrieved_docs=[
             {
                 "filename": result["filename"],
                 "section_title": result["section_title"],
                 "score": result["score"],
-                "citation": result["citation"],
+                "citation": (
+                    "[檢索分數低於門檻，依據不足]" if low_confidence else result["citation"]
+                ),
             }
             for result in search_results
         ],
@@ -782,10 +1053,18 @@ def generate_draft_and_escalate_skill(
         status="Pending Human Review",
     )
 
+    answer = (
+        "本系統目前知識庫中，尚未收錄足以回答此問題的文件。\n"
+        "檢索信心分數低於門檻，無法提供可信依據。\n"
+        "建議將此問題轉交資深工程師，並在補充相關文件後重新查詢。"
+        if low_confidence
+        else "已建立人工審查 ticket 與商務澄清信草稿，需由指定窗口確認後才能對外使用。"
+    )
+
     return {
         "ticket": ticket,
         "search_results": search_results,
-        "answer": "已建立人工審查 ticket 與商務澄清信草稿，需由指定窗口確認後才能對外使用。",
+        "answer": answer,
         "llm_mode": llm_mode,
         "model": response_model,
         "fallback_used": fallback_used,
@@ -928,6 +1207,7 @@ def build_route_log(
     action_status: str,
     ticket: HumanReviewTicket | None = None,
     sandbox_result: DataOpsSandboxResult | None = None,
+    evidence: EvidenceAssessment | None = None,
 ) -> dict[str, Any]:
     log = {
         "request_id": f"REQ-{datetime.now().astimezone():%Y%m%d}-{uuid.uuid4().hex[:8].upper()}",
@@ -961,6 +1241,15 @@ def build_route_log(
         "current_action_tier": sandbox_result.current_action_tier if sandbox_result else None,
         "sql_validation_status": sandbox_result.sql_validation_status if sandbox_result else "N/A",
         "approval_queue": sandbox_result.approval_queue if sandbox_result else None,
+        # === 情境五 self-correction 證據評估的可觀測欄位 ===
+        "evidence_sufficient": evidence.sufficient if evidence else None,
+        "evidence_confidence": evidence.confidence if evidence else None,
+        "evidence_hit_count": evidence.hit_count if evidence else None,
+        "evidence_top_score": evidence.top_score if evidence else None,
+        "evidence_coverage": evidence.coverage if evidence else None,
+        "evidence_missing_terms": evidence.missing_terms if evidence else None,
+        "evidence_reason": evidence.reason if evidence else None,
+        "evidence_judge_used": evidence.judge_used if evidence else None,
     }
     return log
 
@@ -972,6 +1261,7 @@ def add_user_message(content: str, documents: list[dict[str, Any]]) -> None:
     results: list[dict[str, Any]] = []
     ticket: HumanReviewTicket | None = None
     sandbox_result: DataOpsSandboxResult | None = None
+    evidence: EvidenceAssessment | None = None
 
     if route_decision.route_status == "search":
         search_query = content
@@ -979,8 +1269,36 @@ def add_user_message(content: str, documents: list[dict[str, Any]]) -> None:
         if previous_user_query and route_decision.intent_summary.startswith("延續前一題"):
             search_query = f"{previous_user_query} {content}"
         results = search_knowledge_base(search_query, documents)
-        answer_result = generate_grounded_answer(content, results)
-        action_status = "answered"
+
+        # === 情境五 Self-Correction Loop ===
+        # 檢索『之後』顯式評估證據強度，不足就推翻初判路由（observe → decide → act differently）
+        config = load_llm_config()
+        evidence = evaluate_evidence(
+            search_query,
+            results,
+            llm_mode=config["llm_mode"],
+            api_key=config["gemini_api_key"],
+            model=config["gemma_model"],
+        )
+
+        if not evidence.sufficient:
+            route_decision = build_low_confidence_route(route_decision, evidence)
+            hitl_result = generate_draft_and_escalate_skill(
+                content, route_decision, documents, low_confidence=True, evidence=evidence,
+            )
+            ticket = hitl_result["ticket"]
+            results = hitl_result["search_results"]
+            answer_result = {
+                "answer": hitl_result["answer"],
+                "llm_mode": hitl_result["llm_mode"],
+                "model": hitl_result["model"],
+                "fallback_used": True,  # 由 search 降級為 escalate，標示 fallback
+                "error": hitl_result["error"],
+            }
+            action_status = "low_confidence_escalated"
+        else:
+            answer_result = generate_grounded_answer(content, results)
+            action_status = "answered"
     elif route_decision.route_status == "generate_draft_and_escalate":
         hitl_result = generate_draft_and_escalate_skill(content, route_decision, documents)
         ticket = hitl_result["ticket"]
@@ -1038,6 +1356,7 @@ def add_user_message(content: str, documents: list[dict[str, Any]]) -> None:
         action_status,
         ticket,
         sandbox_result,
+        evidence,
     )
 
 
@@ -1072,6 +1391,22 @@ def render_log_panel(last_log: dict[str, Any]) -> None:
                 ]
             )
         )
+
+        if last_log.get("evidence_sufficient") is not None:
+            st.text(
+                "\n".join(
+                    [
+                        "[EVIDENCE] 證據評估（情境五 self-correction）：",
+                        f"sufficient = {last_log.get('evidence_sufficient')}",
+                        f"hit_count = {last_log.get('evidence_hit_count')}",
+                        f"top_score = {last_log.get('evidence_top_score')}",
+                        f"coverage = {last_log.get('evidence_coverage')}",
+                        f"missing_terms = {last_log.get('evidence_missing_terms')}",
+                        f"judge_used = {last_log.get('evidence_judge_used')}",
+                        f"reason = {last_log.get('evidence_reason')}",
+                    ]
+                )
+            )
 
         if last_log.get("ticket_id"):
             st.text(
@@ -1166,21 +1501,36 @@ def render_document_preview(documents: list[dict[str, Any]], load_error: str | N
 
 
 def render_hitl_ticket(ticket: dict[str, Any]) -> None:
-    st.error("HITL GATE（Tier 1）：偵測到高風險商務承諾或需人工確認事項，已攔截直接回答。")
-    with st.expander("[HITL GATE] 人工審查佇列", expanded=True):
+    is_low_confidence = ticket.get("risk_type") == "Low Confidence"
+    if is_low_confidence:
+        st.warning(
+            "知識庫不足（Low Confidence Fallback）：檢索分數低於門檻，"
+            "系統已自動從 search 升級為人工審查路由。"
+        )
+        gate_title = "[HITL GATE] 人工審查佇列（知識庫不足）"
+        draft_label = "知識庫不足通知草稿"
+    else:
+        st.error("HITL GATE（Tier 1）：偵測到高風險商務承諾或需人工確認事項，已攔截直接回答。")
+        gate_title = "[HITL GATE] 人工審查佇列"
+        draft_label = "商務澄清信草稿"
+
+    with st.expander(gate_title, expanded=True):
         st.write(f"**ticket_id:** {ticket['ticket_id']}")
         st.write(f"**risk_type:** {ticket['risk_type']}")
         st.write(f"**risk_reason:** {ticket['risk_reason']}")
         st.write(f"**suggested_owner:** {ticket['suggested_owner']}")
+        st.write(f"**draft_type:** {ticket['draft_type']}")
         st.write(f"**status:** {ticket['status']}")
         st.text_area(
-            "商務澄清信草稿",
+            draft_label,
             value=ticket["draft_preview"],
             height=360,
             key=f"draft_preview_{ticket['ticket_id']}",
         )
 
         st.markdown("**引用來源 / Retrieved docs**")
+        if not ticket["retrieved_docs"]:
+            st.caption("無有效命中文件。")
         for result in ticket["retrieved_docs"]:
             st.caption(
                 f"{result['citation']} | {result['section_title']} | score={result['score']}"
