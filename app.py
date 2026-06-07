@@ -255,39 +255,49 @@ code, pre, kbd{ font-family: var(--gc-font-mono); }
 [data-testid="stChatInput"]:focus-within{ border-color: var(--gc-navy); box-shadow: 0 0 0 3px rgba(11,53,84,.10); }
 [data-testid="stChatInput"] textarea{ color: var(--gc-text); }
 
-/* ---- bordered container = gate card (flat, hairline) ---- */
-div[data-testid="stVerticalBlockBorderWrapper"]{
-  border: 1px solid var(--gc-border) !important; border-radius: 12px;
-  background: var(--gc-surface); box-shadow: var(--gc-shadow-sm);
-}
-/* type accent: thin 2px left + hairline border + barely-there wash (no manila) */
-div[data-testid="stVerticalBlockBorderWrapper"]:has(.gc-marker--gold){
-  border-color: rgba(185,130,46,.30) !important; border-left: 2px solid var(--gc-gold) !important;
-  background: linear-gradient(0deg, rgba(185,130,46,.045), rgba(185,130,46,.045)), var(--gc-surface);
-}
-div[data-testid="stVerticalBlockBorderWrapper"]:has(.gc-marker--rose){
-  border-color: rgba(168,95,95,.30) !important; border-left: 2px solid var(--gc-red) !important;
-  background: linear-gradient(0deg, rgba(168,95,95,.05), rgba(168,95,95,.05)), var(--gc-surface);
-}
-div[data-testid="stVerticalBlockBorderWrapper"]:has(.gc-marker--lowconf){
-  border-color: rgba(168,95,95,.26) !important; border-left: 2px solid var(--gc-gold) !important;
-  background: linear-gradient(0deg, rgba(185,130,46,.05), rgba(185,130,46,.05)), var(--gc-surface);
-}
+/* ---- gate container marker ----
+   不再全域 styling stVerticalBlockBorderWrapper，避免 Streamlit 外層容器被 :has() 污染成大框。
+   Gate 色彩改由 banner / badge / 內容區塊自己承擔。 */
 .gc-marker{ display: none; }
 
 /* ---- gate header: lightweight label row (no fill, no border) ---- */
 .gc-banner{
   display: flex; align-items: baseline; gap: .55rem; flex-wrap: wrap;
-  background: transparent; border: 0; padding: 0; margin: .05rem 0 .65rem;
+  border-radius: 9px;
+  padding: .45rem .65rem;
+  margin: .05rem 0 .65rem;
+  border: 1px solid var(--gc-border);
+  background: var(--gc-surface);
+  border-left-width: 3px;
 }
 .gc-banner__eyebrow{
   font-family: var(--gc-font-mono); font-size: .62rem; letter-spacing: .14em;
   text-transform: uppercase; font-weight: 700; color: var(--gc-muted);
 }
 .gc-banner__title{ font-weight: 700; font-size: .96rem; color: var(--gc-navy); }
+.gc-banner--gold{
+  background: rgba(185,130,46,.055);
+  border-color: rgba(185,130,46,.24);
+  border-left-color: var(--gc-gold);
+}
+.gc-banner--rose{
+  background: rgba(168,95,95,.055);
+  border-color: rgba(168,95,95,.24);
+  border-left-color: var(--gc-red);
+}
+.gc-banner--lowconf{
+  background: rgba(185,130,46,.045);
+  border-color: rgba(185,130,46,.22);
+  border-left-color: var(--gc-gold);
+}
+.gc-banner--green{
+  background: rgba(47,125,74,.045);
+  border-color: rgba(47,125,74,.22);
+  border-left-color: var(--gc-green);
+}
 .gc-banner--gold .gc-banner__eyebrow{ color: var(--gc-gold); }
 .gc-banner--rose .gc-banner__eyebrow{ color: var(--gc-red); }
-.gc-banner--lowconf .gc-banner__eyebrow{ color: var(--gc-red); }
+.gc-banner--lowconf .gc-banner__eyebrow{ color: var(--gc-gold); }
 .gc-banner--green .gc-banner__eyebrow{ color: var(--gc-green); }
 
 /* ---- key/value: borderless definition grid ---- */
