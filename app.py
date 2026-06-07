@@ -14,12 +14,21 @@ from pydantic import BaseModel, Field
 
 
 PROJECT_NAME = "Gintec Copilot"
-DEMO_CAPTION = "Demo v2.1 - governed routing、本地 RAG、HITL、Data Ops Sandbox、Evidence Gate 與 Audit Log。"
+DEMO_CAPTION = "Demo v2.1 - 企業內部知識助理：RAG、HITL、Data Ops Sandbox、Evidence Gate、Governance Trace 與 Audit Log。"
 MOCK_REPLY = "這是 Task 1 的假回覆：目前尚未接上 RAG / LLM。"
 DOCS_DIR = Path("data") / "docs"
 DEFAULT_LLM_MODE = "mock"
 DEFAULT_GEMMA_MODEL = "gemma-4-26b-a4b-it"
 DATA_OPS_TABLE_NAME = "demo_case_status"
+THEME_COLORS = {
+    "bg": "#F7F5EF",
+    "primary": "#0E3A5B",
+    "success": "#2F7D4A",
+    "warning": "#B68A3D",
+    "danger": "#A85F5F",
+    "card": "#FFFFFF",
+    "border": "#D9DED8",
+}
 FAKE_SANDBOX_ROWS = [
     {
         "case_id": "DEMO-001",
@@ -195,6 +204,101 @@ def initialize_state() -> None:
         st.session_state.messages = []
     if "last_log" not in st.session_state:
         st.session_state.last_log = MOCK_LOG.copy()
+
+
+def render_global_styles() -> None:
+    st.markdown(
+        f"""
+        <style>
+        :root {{
+            --gc-bg: {THEME_COLORS["bg"]};
+            --gc-primary: {THEME_COLORS["primary"]};
+            --gc-success: {THEME_COLORS["success"]};
+            --gc-warning: {THEME_COLORS["warning"]};
+            --gc-danger: {THEME_COLORS["danger"]};
+            --gc-card: {THEME_COLORS["card"]};
+            --gc-border: {THEME_COLORS["border"]};
+        }}
+        .stApp {{
+            background: var(--gc-bg);
+            color: var(--gc-primary);
+        }}
+        [data-testid="stSidebar"] {{
+            background: linear-gradient(180deg, rgba(14,58,91,0.04), rgba(255,255,255,0.88));
+            border-right: 1px solid var(--gc-border);
+        }}
+        [data-testid="stHeader"] {{
+            background: rgba(247,245,239,0.92);
+        }}
+        [data-testid="stMetric"] {{
+            background: var(--gc-card);
+            border: 1px solid var(--gc-border);
+            border-radius: 12px;
+            padding: 0.4rem 0.6rem;
+        }}
+        [data-testid="stExpander"] {{
+            border: 1px solid var(--gc-border);
+            border-radius: 12px;
+            background: var(--gc-card);
+        }}
+        .stChatMessage {{
+            background: var(--gc-card);
+            border: 1px solid var(--gc-border);
+            border-radius: 16px;
+        }}
+        .gc-badge {{
+            display: inline-block;
+            margin: 0 0 0.5rem 0;
+            padding: 0.2rem 0.65rem;
+            border-radius: 999px;
+            border: 1px solid currentColor;
+            font-size: 0.82rem;
+            font-weight: 600;
+            letter-spacing: 0.01em;
+            background: rgba(255,255,255,0.92);
+        }}
+        .gc-badge-success {{ color: var(--gc-success); }}
+        .gc-badge-warning {{ color: var(--gc-warning); }}
+        .gc-badge-danger {{ color: var(--gc-danger); }}
+        .gc-badge-neutral {{ color: var(--gc-primary); }}
+        .gc-panel-caption {{
+            color: var(--gc-primary);
+            opacity: 0.82;
+            font-size: 0.92rem;
+        }}
+        .gc-title-caption {{
+            color: var(--gc-primary);
+            opacity: 0.78;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_status_badge(label: str, tone: Literal["success", "warning", "danger", "neutral"]) -> None:
+    st.markdown(
+        f'<span class="gc-badge gc-badge-{tone}">{label}</span>',
+        unsafe_allow_html=True,
+    )
+
+
+def build_status_badge(
+    route_status: str,
+    action_status: str,
+    risk_type: str,
+) -> tuple[str, Literal["success", "warning", "danger", "neutral"]]:
+    if route_status == "search" and action_status == "answered":
+        return "已引用來源", "success"
+    if risk_type == "Low Confidence" and action_status == "low_confidence_escalated":
+        return "資料不足，已轉人工", "warning"
+    if route_status == "generate_draft_and_escalate" and action_status == "pending_human_review":
+        return "需人工審查", "warning"
+    if route_status == "data_ops_dry_run":
+        return "已禁止 production 寫入", "danger"
+    if route_status == "out_of_scope":
+        return "零檢索", "neutral"
+    return "狀態已記錄", "neutral"
 
 
 def route_user_request(user_query: str, conversation_state: dict[str, Any] | None = None) -> RouteDecision:
@@ -1343,6 +1447,12 @@ def add_user_message(content: str, documents: list[dict[str, Any]]) -> None:
 
     st.session_state.messages.append({"role": "user", "content": content})
     assistant_message: dict[str, Any] = {"role": "assistant", "content": answer_result["answer"]}
+    badge_label, badge_tone = build_status_badge(
+        route_decision.route_status,
+        action_status,
+        route_decision.risk_type,
+    )
+    assistant_message["status_badge"] = {"label": badge_label, "tone": badge_tone}
     if ticket:
         assistant_message["hitl_ticket"] = ticket.model_dump()
     if sandbox_result:
@@ -1450,9 +1560,9 @@ def render_log_panel(last_log: dict[str, Any]) -> None:
 def render_sidebar(documents: list[dict[str, Any]], load_error: str | None) -> None:
     with st.sidebar:
         st.header("Demo 說明")
-        st.write("目前完成 Governed Agentic Workflow Demo：RAG、HITL、Data Ops Sandbox、Evidence Gate 與治理日誌。")
-        st.write("系統會依請求意圖進行路由；高風險承諾轉人工，系統修改進入 dry-run sandbox，證據不足則升級為 Low Confidence 人工審查。")
-        st.write("所有資料操作僅產生 fake sandbox dry-run preview，不連接真實資料庫。")
+        st.markdown('<p class="gc-panel-caption">目前完成 RAG、HITL、Data Ops Sandbox、Evidence Gate 與 Governance Trace / Audit Log。</p>', unsafe_allow_html=True)
+        st.write("系統會先做受控路由，再依情境進入知識檢索、人工審查或 sandbox dry-run。")
+        st.write("高風險承諾不直接回答；資料修改不寫入 production；證據不足則升級為 Low Confidence 人工審查。")
 
         st.divider()
         st.subheader("知識庫文件")
@@ -1483,6 +1593,7 @@ def render_sidebar(documents: list[dict[str, Any]], load_error: str | None) -> N
 
 def render_document_preview(documents: list[dict[str, Any]], load_error: str | None) -> None:
     st.subheader("知識庫文件預覽")
+    st.caption("目前展示三份本地 Markdown 文件，供 RAG、Evidence Gate 與人工審查草稿引用。")
 
     if load_error:
         st.error(load_error)
@@ -1504,6 +1615,7 @@ def render_document_preview(documents: list[dict[str, Any]], load_error: str | N
 def render_hitl_ticket(ticket: dict[str, Any]) -> None:
     is_low_confidence = ticket.get("risk_type") == "Low Confidence"
     if is_low_confidence:
+        render_status_badge("資料不足，已轉人工", "warning")
         st.warning(
             "知識庫不足（Low Confidence Fallback）：檢索分數低於門檻，"
             "系統已自動從 search 升級為人工審查路由。"
@@ -1511,6 +1623,7 @@ def render_hitl_ticket(ticket: dict[str, Any]) -> None:
         gate_title = "[HITL GATE] 人工審查佇列（知識庫不足）"
         draft_label = "知識庫不足通知草稿"
     else:
+        render_status_badge("需人工審查", "warning")
         st.error("HITL GATE（Tier 1）：偵測到高風險商務承諾或需人工確認事項，已攔截直接回答。")
         gate_title = "[HITL GATE] 人工審查佇列"
         draft_label = "商務澄清信草稿"
@@ -1539,6 +1652,7 @@ def render_hitl_ticket(ticket: dict[str, Any]) -> None:
 
 
 def render_data_ops_sandbox(sandbox_result: dict[str, Any]) -> None:
+    render_status_badge("已禁止 production 寫入", "danger")
     st.error("SANDBOX GATE（Tier 3）：偵測到內部系統修改意圖，已禁止 production 寫入。")
     with st.expander("[SANDBOX GATE] Data Ops Dry-run Preview", expanded=True):
         st.write(f"**sandbox_id:** {sandbox_result['sandbox_id']}")
@@ -1554,10 +1668,16 @@ def render_data_ops_sandbox(sandbox_result: dict[str, Any]) -> None:
 
 
 def render_chat(documents: list[dict[str, Any]]) -> None:
-    st.subheader("Chat")
+    st.subheader("企業知識助理")
+    st.caption("所有回覆都會保留狀態語意：已引用來源、需人工審查、資料不足轉人工、禁止 production 寫入或零檢索。")
 
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
+            if message.get("status_badge"):
+                render_status_badge(
+                    message["status_badge"]["label"],
+                    message["status_badge"]["tone"],
+                )
             st.write(message["content"])
             if message.get("hitl_ticket"):
                 render_hitl_ticket(message["hitl_ticket"])
@@ -1573,11 +1693,12 @@ def render_chat(documents: list[dict[str, Any]]) -> None:
 def main() -> None:
     st.set_page_config(page_title=PROJECT_NAME, page_icon="G", layout="wide")
     initialize_state()
+    render_global_styles()
 
     documents, load_error = load_markdown_documents()
 
     st.title(PROJECT_NAME)
-    st.caption(DEMO_CAPTION)
+    st.markdown(f'<p class="gc-title-caption">{DEMO_CAPTION}</p>', unsafe_allow_html=True)
 
     render_sidebar(documents, load_error)
     render_document_preview(documents, load_error)
