@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 import os
 import re
@@ -20,15 +21,407 @@ DOCS_DIR = Path("data") / "docs"
 DEFAULT_LLM_MODE = "mock"
 DEFAULT_GEMMA_MODEL = "gemma-4-26b-a4b-it"
 DATA_OPS_TABLE_NAME = "demo_case_status"
-THEME_COLORS = {
-    "bg": "#F7F5EF",
-    "primary": "#0E3A5B",
-    "success": "#2F7D4A",
-    "warning": "#B68A3D",
-    "danger": "#A85F5F",
-    "card": "#FFFFFF",
-    "border": "#D9DED8",
+DESIGN_TOKENS = {
+    "bg": "#F7F3EA",
+    "surface": "#FFFDF8",
+    "surface_alt": "#FDF8EF",
+    "navy": "#0B3554",
+    "navy_dark": "#08283F",
+    "green": "#2F7D4A",
+    "green_soft": "#E6EFE7",
+    "border": "#D8D2C4",
+    "text": "#1F2933",
+    "muted": "#6B7A88",
+    "gold": "#B9822E",
+    "gold_soft": "#F5E9D6",
+    "red": "#A85F5F",
+    "red_soft": "#F7E6E4",
+    "gray_soft": "#EEF1F2",
+    "log_dark": "#0F1E2A",
 }
+
+# 集中式樣式表（Ivory Control Room）。色彩由 DESIGN_TOKENS 注入為 CSS 變數，見 inject_custom_css。
+GINTEC_CSS = r'''
+/* ============================================================
+   Gintec Copilot · Ivory Control Room
+   暖米白 base / 深海藍綠 primary / 森林綠 + 金棕 + 玫瑰棕 狀態色
+   克制、可稽核、內部基礎建設氣質。所有色彩來自 DESIGN_TOKENS。
+   ============================================================ */
+
+/* ---- font stacks ---- */
+:root{
+  --gc-font-cjk: "Microsoft JhengHei","PingFang TC","Noto Sans TC","Hiragino Sans TC",-apple-system,"Segoe UI",system-ui,sans-serif;
+  --gc-font-serif: Georgia,"Times New Roman","Songti TC",serif;
+  --gc-font-mono: "SFMono-Regular","JetBrains Mono",Consolas,Menlo,"Courier New",monospace;
+  --gc-shadow-sm: 0 1px 2px rgba(8,40,63,.05);
+  --gc-shadow-md: 0 1px 2px rgba(8,40,63,.05), 0 14px 30px -22px rgba(8,40,63,.35);
+  --gc-radius: 14px;
+}
+
+/* ---- base ---- */
+.stApp{ background: var(--gc-bg); color: var(--gc-text); }
+.stApp, .stMarkdown, .stMarkdown p, .stTextInput, .stTextArea, label, button, input, textarea{
+  font-family: var(--gc-font-cjk);
+}
+.block-container{ padding-top: 1.6rem; padding-bottom: 5rem; max-width: 1200px; }
+h1,h2,h3,h4,h5{ color: var(--gc-navy); font-weight: 700; letter-spacing: .2px; }
+a{ color: var(--gc-navy); text-decoration-color: var(--gc-border); }
+hr{ border-color: var(--gc-border); }
+[data-testid="stHeader"]{ background: transparent; }
+footer{ visibility: hidden; }
+#MainMenu{ visibility: hidden; }
+
+/* ---- shared atoms ---- */
+.gc-eyebrow{
+  font-family: var(--gc-font-mono);
+  font-size: .68rem; font-weight: 700;
+  letter-spacing: .16em; text-transform: uppercase;
+  color: var(--gc-muted); margin: .2rem 0 .55rem;
+}
+.gc-section-title{
+  font-size: 1.18rem; font-weight: 700; color: var(--gc-navy);
+  margin: 0 0 .15rem;
+}
+.gc-note{
+  font-size: .82rem; color: var(--gc-muted);
+  border-left: 2px solid var(--gc-border); padding: .15rem 0 .15rem .6rem; margin: .55rem 0 .2rem;
+}
+
+/* ---- HERO ---- */
+.gc-hero{
+  position: relative; overflow: hidden;
+  border: 1px solid rgba(185,130,46,.35);
+  border-radius: 18px;
+  background:
+    radial-gradient(120% 140% at 88% -10%, rgba(47,125,74,.30), transparent 55%),
+    linear-gradient(135deg, var(--gc-navy-dark), var(--gc-navy));
+  box-shadow: var(--gc-shadow-md);
+  margin: .2rem 0 1.4rem;
+}
+.gc-hero__grid{
+  position: absolute; inset: 0; opacity: .5; pointer-events: none;
+  background-image:
+    linear-gradient(rgba(247,243,234,.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(247,243,234,.05) 1px, transparent 1px);
+  background-size: 30px 30px;
+  mask-image: linear-gradient(120deg, black, transparent 70%);
+}
+.gc-hero__body{ position: relative; padding: 1.6rem 1.8rem 1.5rem; }
+.gc-hero__eyebrow{
+  font-family: var(--gc-font-mono); font-size: .68rem; letter-spacing: .22em;
+  text-transform: uppercase; color: rgba(245,233,214,.78); margin-bottom: .7rem;
+}
+.gc-hero__title{
+  font-family: var(--gc-font-serif); font-weight: 700;
+  font-size: 2.15rem; line-height: 1.05; color: var(--gc-surface);
+  letter-spacing: .5px;
+}
+.gc-hero__sub{
+  font-family: var(--gc-font-mono); font-size: .82rem; letter-spacing: .04em;
+  color: var(--gc-gold-soft); margin-top: .35rem;
+}
+.gc-hero__lede{
+  color: rgba(247,243,234,.86); font-size: .95rem; line-height: 1.7;
+  max-width: 60ch; margin-top: .9rem;
+}
+.gc-hero__chips{ display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1.15rem; }
+
+/* ---- chips ---- */
+.gc-chip{
+  display: inline-flex; align-items: center; gap: .4rem;
+  font-size: .76rem; font-weight: 600; letter-spacing: .02em;
+  padding: .28rem .7rem; border-radius: 999px;
+  border: 1px solid rgba(245,233,214,.35);
+  background: rgba(247,243,234,.08); color: var(--gc-surface);
+}
+.gc-chip::before{
+  content: ""; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--gc-gold);
+}
+
+/* ---- status badge ---- */
+.gc-badge{
+  display: inline-flex; align-items: center; gap: .42rem;
+  font-size: .76rem; font-weight: 700; letter-spacing: .01em;
+  padding: .22rem .62rem; border-radius: 999px;
+  border: 1px solid transparent; line-height: 1.2;
+}
+.gc-badge__dot{ width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.gc-badge--success{ color: var(--gc-green); background: var(--gc-green-soft); border-color: rgba(47,125,74,.30); }
+.gc-badge--warning{ color: var(--gc-gold);  background: var(--gc-gold-soft);  border-color: rgba(185,130,46,.32); }
+.gc-badge--danger{  color: var(--gc-red);   background: var(--gc-red-soft);   border-color: rgba(168,95,95,.32); }
+.gc-badge--neutral{ color: var(--gc-muted); background: var(--gc-gray-soft);  border-color: var(--gc-border); }
+
+/* ---- sidebar / control panel ---- */
+[data-testid="stSidebar"]{
+  background: var(--gc-surface);
+  border-right: 1px solid var(--gc-border);
+}
+[data-testid="stSidebar"] .block-container{ padding-top: 1.1rem; }
+.gc-side-brand{ display: flex; align-items: center; gap: .6rem; margin-bottom: 1rem; }
+.gc-side-brand__mark{
+  font-family: var(--gc-font-mono); font-weight: 700; font-size: .82rem;
+  color: var(--gc-surface); background: var(--gc-navy);
+  width: 30px; height: 30px; border-radius: 8px;
+  display: inline-flex; align-items: center; justify-content: center;
+  letter-spacing: .02em;
+}
+.gc-side-brand__name{ font-weight: 700; color: var(--gc-navy); font-size: 1.02rem; }
+
+.gc-info-card{
+  background: var(--gc-surface-alt);
+  border: 1px solid var(--gc-border);
+  border-left: 3px solid var(--gc-navy);
+  border-radius: 10px; padding: .55rem .7rem; margin-bottom: .5rem;
+}
+.gc-info-card__k{
+  font-family: var(--gc-font-mono); font-size: .64rem; letter-spacing: .12em;
+  text-transform: uppercase; color: var(--gc-muted); margin-bottom: .12rem;
+}
+.gc-info-card__v{ font-size: .82rem; color: var(--gc-text); line-height: 1.45; }
+.gc-info-card--green{ border-left-color: var(--gc-green); }
+.gc-info-card--gold{ border-left-color: var(--gc-gold); }
+.gc-info-card--rose{ border-left-color: var(--gc-red); }
+
+/* metric -> dashboard card */
+[data-testid="stMetric"]{
+  background: var(--gc-surface); border: 1px solid var(--gc-border);
+  border-radius: 12px; padding: .55rem .8rem; box-shadow: var(--gc-shadow-sm);
+}
+[data-testid="stMetricLabel"] p{ color: var(--gc-muted); font-size: .72rem; letter-spacing: .04em; }
+[data-testid="stMetricValue"]{ color: var(--gc-navy); font-family: var(--gc-font-mono); }
+
+/* knowledge file mini rows in sidebar */
+.gc-kb-mini{
+  display: flex; align-items: center; gap: .5rem; padding: .3rem 0;
+  border-bottom: 1px dashed var(--gc-border);
+}
+.gc-kb-mini__name{ font-size: .8rem; color: var(--gc-text); }
+
+/* ---- buttons ---- */
+.stButton > button, .stDownloadButton > button{
+  background: var(--gc-surface); color: var(--gc-navy);
+  border: 1px solid var(--gc-border); border-radius: 10px;
+  font-weight: 600; box-shadow: none;
+  transition: background .14s ease, color .14s ease, border-color .14s ease;
+}
+[data-testid="stSidebar"] .stButton > button{
+  text-align: left; white-space: normal; line-height: 1.4;
+  font-size: .82rem; font-weight: 500; padding: .5rem .7rem;
+}
+.stButton > button:hover, .stDownloadButton > button:hover{
+  border-color: var(--gc-navy); background: var(--gc-navy); color: var(--gc-surface);
+}
+.stButton > button:focus, .stDownloadButton > button:focus{
+  box-shadow: 0 0 0 3px rgba(11,53,84,.14); border-color: var(--gc-navy);
+}
+.stButton > button:active{ transform: translateY(1px); }
+
+/* ---- tabs ---- */
+[data-testid="stTabs"] [data-baseweb="tab-list"]{
+  gap: .15rem; border-bottom: 1px solid var(--gc-border);
+}
+[data-baseweb="tab"]{
+  font-weight: 600; color: var(--gc-muted);
+  background: transparent; padding: .55rem .85rem;
+}
+[data-baseweb="tab"][aria-selected="true"]{ color: var(--gc-navy); }
+[data-baseweb="tab-highlight"], [data-baseweb="tab-border"] ~ div{ background-color: var(--gc-navy); }
+[data-testid="stTabs"] [data-baseweb="tab-highlight"]{ background-color: var(--gc-navy); }
+
+/* ---- expander ---- */
+[data-testid="stExpander"]{
+  border: 1px solid var(--gc-border); border-radius: 12px;
+  background: var(--gc-surface); box-shadow: var(--gc-shadow-sm); overflow: hidden;
+}
+[data-testid="stExpander"] summary{ font-weight: 600; color: var(--gc-navy); }
+[data-testid="stExpander"] summary:hover{ color: var(--gc-navy-dark); }
+
+/* ---- code blocks: refined light panel (keep token colors + copy) ---- */
+[data-testid="stCode"], .stCode{ background: transparent; }
+[data-testid="stCode"] pre, .stCode pre, pre{
+  background: var(--gc-surface-alt) !important;
+  border: 1px solid var(--gc-border); border-radius: 10px;
+}
+code, pre, kbd{ font-family: var(--gc-font-mono); }
+
+/* ---- text area ---- */
+.stTextArea textarea{
+  background: var(--gc-surface-alt) !important;
+  border: 1px solid var(--gc-border) !important; border-radius: 10px !important;
+  color: var(--gc-text) !important; font-family: var(--gc-font-cjk);
+  font-size: .86rem; line-height: 1.6;
+}
+.stTextArea textarea:focus{ box-shadow: 0 0 0 3px rgba(11,53,84,.12); border-color: var(--gc-navy) !important; }
+
+/* ---- tables: review preview look ---- */
+[data-testid="stTable"] table{
+  border-collapse: separate; border-spacing: 0;
+  border: 1px solid var(--gc-border); border-radius: 10px; overflow: hidden;
+  background: var(--gc-surface); font-size: .84rem;
+}
+[data-testid="stTable"] thead th{
+  background: var(--gc-navy); color: var(--gc-surface);
+  font-weight: 600; letter-spacing: .02em; text-align: left;
+}
+[data-testid="stTable"] tbody th{ background: var(--gc-surface-alt); color: var(--gc-muted); }
+[data-testid="stTable"] tbody td{ color: var(--gc-text); }
+[data-testid="stTable"] tbody tr:nth-child(even) td{ background: var(--gc-surface-alt); }
+
+/* ---- chat input ---- */
+[data-testid="stChatInput"]{
+  border: 1px solid var(--gc-border); border-radius: 12px;
+  background: var(--gc-surface); box-shadow: var(--gc-shadow-sm);
+}
+[data-testid="stChatInput"]:focus-within{ border-color: var(--gc-navy); box-shadow: 0 0 0 3px rgba(11,53,84,.12); }
+[data-testid="stChatInput"] textarea{ color: var(--gc-text); }
+
+/* ---- bordered container = gate card ---- */
+div[data-testid="stVerticalBlockBorderWrapper"]{
+  border: 1px solid var(--gc-border) !important; border-radius: var(--gc-radius);
+  background: var(--gc-surface); box-shadow: var(--gc-shadow-sm);
+}
+/* accent left-stripe + tint by gate type (progressive enhancement via :has) */
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.gc-marker--gold){
+  border-left: 4px solid var(--gc-gold) !important; background: var(--gc-gold-soft);
+}
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.gc-marker--rose){
+  border-left: 4px solid var(--gc-red) !important; background: var(--gc-red-soft);
+}
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.gc-marker--lowconf){
+  border-left: 4px solid var(--gc-gold) !important;
+  background: linear-gradient(180deg, var(--gc-gold-soft), var(--gc-red-soft));
+}
+.gc-marker{ display: none; }
+
+/* ---- gate banner ---- */
+.gc-banner{
+  display: flex; align-items: baseline; gap: .6rem; flex-wrap: wrap;
+  border-radius: 10px; padding: .55rem .8rem; margin: .1rem 0 .7rem;
+  border: 1px solid var(--gc-border);
+}
+.gc-banner__eyebrow{
+  font-family: var(--gc-font-mono); font-size: .66rem; letter-spacing: .14em;
+  text-transform: uppercase; font-weight: 700;
+}
+.gc-banner__title{ font-weight: 700; font-size: 1rem; color: var(--gc-navy); }
+.gc-banner--gold{ background: var(--gc-gold-soft); border-color: rgba(185,130,46,.4); }
+.gc-banner--gold .gc-banner__eyebrow{ color: var(--gc-gold); }
+.gc-banner--rose{ background: var(--gc-red-soft); border-color: rgba(168,95,95,.4); }
+.gc-banner--rose .gc-banner__eyebrow{ color: var(--gc-red); }
+.gc-banner--lowconf{ background: var(--gc-gold-soft); border-color: rgba(168,95,95,.35); }
+.gc-banner--lowconf .gc-banner__eyebrow{ color: var(--gc-red); }
+.gc-banner--green{ background: var(--gc-green-soft); border-color: rgba(47,125,74,.35); }
+.gc-banner--green .gc-banner__eyebrow{ color: var(--gc-green); }
+
+/* ---- key/value grid ---- */
+.gc-kv-grid{
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: .5rem; margin: .2rem 0 .7rem;
+}
+.gc-kv{
+  background: var(--gc-surface); border: 1px solid var(--gc-border);
+  border-radius: 9px; padding: .42rem .6rem;
+}
+.gc-kv__k{
+  font-family: var(--gc-font-mono); font-size: .62rem; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--gc-muted); margin-bottom: .12rem;
+}
+.gc-kv__v{ font-size: .85rem; color: var(--gc-text); font-family: var(--gc-font-mono); word-break: break-word; }
+
+/* missing-term chips */
+.gc-terms{ display: flex; flex-wrap: wrap; gap: .35rem; margin: .3rem 0 .2rem; }
+.gc-term{
+  font-family: var(--gc-font-mono); font-size: .72rem;
+  background: var(--gc-red-soft); color: var(--gc-red);
+  border: 1px solid rgba(168,95,95,.3); border-radius: 6px; padding: .12rem .45rem;
+}
+
+/* retrieved evidence rows */
+.gc-evi{
+  font-family: var(--gc-font-mono); font-size: .74rem; color: var(--gc-muted);
+  padding: .22rem 0; border-bottom: 1px dashed var(--gc-border);
+}
+.gc-evi b{ color: var(--gc-text); font-weight: 600; }
+
+/* ---- knowledge asset cards ---- */
+.gc-kb-card{
+  background: var(--gc-surface); border: 1px solid var(--gc-border);
+  border-left: 4px solid var(--gc-muted); border-radius: 12px;
+  padding: .8rem .95rem; margin-bottom: .6rem; box-shadow: var(--gc-shadow-sm);
+}
+.gc-kb-card--navy{ border-left-color: var(--gc-navy); }
+.gc-kb-card--gold{ border-left-color: var(--gc-gold); }
+.gc-kb-card--rose{ border-left-color: var(--gc-red); }
+.gc-kb-card__head{ display: flex; align-items: center; gap: .55rem; margin-bottom: .3rem; }
+.gc-kb-card__title{ font-weight: 700; color: var(--gc-navy); font-size: .98rem; }
+.gc-kb-card__file{ font-family: var(--gc-font-mono); font-size: .72rem; color: var(--gc-muted); }
+.gc-kb-card__purpose{ font-size: .85rem; color: var(--gc-text); margin-top: .35rem; line-height: 1.5; }
+.gc-tag{
+  font-family: var(--gc-font-mono); font-size: .66rem; font-weight: 700;
+  letter-spacing: .06em; padding: .12rem .5rem; border-radius: 6px;
+  border: 1px solid transparent;
+}
+.gc-tag--navy{ color: var(--gc-navy); background: var(--gc-gray-soft); border-color: var(--gc-border); }
+.gc-tag--gold{ color: var(--gc-gold); background: var(--gc-gold-soft); border-color: rgba(185,130,46,.3); }
+.gc-tag--rose{ color: var(--gc-red); background: var(--gc-red-soft); border-color: rgba(168,95,95,.3); }
+.gc-tag--muted{ color: var(--gc-muted); background: var(--gc-gray-soft); border-color: var(--gc-border); }
+
+/* ---- chat / review workbench ---- */
+.gc-msg{ margin: .55rem 0; }
+.gc-msg--user{
+  background: var(--gc-gray-soft); border: 1px solid var(--gc-border);
+  border-radius: 12px; padding: .6rem .85rem; margin-left: auto; max-width: 88%;
+}
+.gc-msg__label{
+  font-family: var(--gc-font-mono); font-size: .64rem; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--gc-muted); font-weight: 700; margin-bottom: .25rem;
+}
+.gc-msg--user .gc-msg__label{ color: var(--gc-navy); }
+.gc-msg__body{ white-space: pre-wrap; line-height: 1.65; color: var(--gc-text); font-size: .9rem; }
+.gc-msg--assistant{
+  background: var(--gc-surface); border: 1px solid var(--gc-border);
+  border-left: 3px solid var(--gc-muted); border-radius: 12px;
+  padding: .7rem .9rem; box-shadow: var(--gc-shadow-sm); max-width: 96%;
+}
+.gc-msg--assistant.gc-tone-success{ border-left-color: var(--gc-green); }
+.gc-msg--assistant.gc-tone-warning{ border-left-color: var(--gc-gold); }
+.gc-msg--assistant.gc-tone-danger{ border-left-color: var(--gc-red); }
+.gc-msg--assistant.gc-tone-neutral{ border-left-color: var(--gc-muted); }
+.gc-msg__head{ display: flex; align-items: center; gap: .6rem; margin-bottom: .4rem; flex-wrap: wrap; }
+
+/* ---- audit console (dark) ---- */
+.gc-console{
+  background: var(--gc-log-dark); border: 1px solid #1d3242; border-radius: 12px;
+  padding: .95rem 1.05rem; box-shadow: var(--gc-shadow-md);
+  font-family: var(--gc-font-mono); color: #cdd9e2; overflow-x: auto;
+}
+.gc-console__pills{ display: flex; flex-wrap: wrap; gap: .4rem; margin-bottom: .85rem; }
+.gc-pill{
+  font-size: .7rem; letter-spacing: .02em; padding: .2rem .55rem; border-radius: 7px;
+  border: 1px solid rgba(205,217,226,.18); background: rgba(205,217,226,.06); color: #e7eef3;
+}
+.gc-pill b{ color: #fff; font-weight: 700; }
+.gc-pill--green{ border-color: rgba(86,182,124,.4); color: #8fe0ad; }
+.gc-pill--gold{ border-color: rgba(214,168,96,.45); color: #e6c081; }
+.gc-pill--rose{ border-color: rgba(212,143,143,.45); color: #e6a8a8; }
+.gc-cline{ display: flex; gap: .7rem; padding: .2rem 0; align-items: baseline; line-height: 1.55; }
+.gc-cline__tag{
+  flex: 0 0 78px; font-size: .64rem; font-weight: 700; letter-spacing: .1em;
+  padding: .08rem .4rem; border-radius: 5px; text-align: center;
+  background: rgba(205,217,226,.08); color: #9fb3c2;
+}
+.gc-cline__tag--route{ color: #8ab4d8; }
+.gc-cline__tag--plan{ color: #b7c3cd; }
+.gc-cline__tag--guard{ color: #e6c081; }
+.gc-cline__tag--action{ color: #8fe0ad; }
+.gc-cline__tag--perf{ color: #b7c3cd; }
+.gc-cline__tag--evidence{ color: #e6a8a8; }
+.gc-cline__tag--hitl{ color: #e6c081; }
+.gc-cline__tag--sandbox{ color: #e6a8a8; }
+.gc-cline__txt{ font-size: .78rem; color: #d7e1e9; word-break: break-word; }
+.gc-cline__txt em{ color: #93a6b4; font-style: normal; }
+'''
 FAKE_SANDBOX_ROWS = [
     {
         "case_id": "DEMO-001",
@@ -206,81 +599,104 @@ def initialize_state() -> None:
         st.session_state.last_log = MOCK_LOG.copy()
 
 
-def render_global_styles() -> None:
+def inject_custom_css() -> None:
+    """集中式 Ivory Control Room 樣式。色彩一律由 DESIGN_TOKENS 推導為 CSS 變數，
+    版面樣式存在模組常數 GINTEC_CSS，方便單點調整與審閱。"""
+    root_vars = ":root{" + ";".join(
+        f"--gc-{key.replace('_', '-')}: {value}" for key, value in DESIGN_TOKENS.items()
+    ) + ";}"
+    st.markdown(f"<style>{root_vars}{GINTEC_CSS}</style>", unsafe_allow_html=True)
+
+
+def html_escape(text: Any) -> str:
+    return html.escape(str(text), quote=True)
+
+
+def build_badge_html(label: str, tone: str) -> str:
+    safe_tone = tone if tone in {"success", "warning", "danger", "neutral"} else "neutral"
+    return (
+        f'<span class="gc-badge gc-badge--{safe_tone}">'
+        f'<span class="gc-badge__dot"></span>{html_escape(label)}</span>'
+    )
+
+
+def render_chip(label: str) -> str:
+    return f'<span class="gc-chip">{html_escape(label)}</span>'
+
+
+def render_hero() -> None:
+    chips = "".join(render_chip(label) for label in ["RAG", "HITL", "Data Ops Sandbox", "Audit Log"])
     st.markdown(
         f"""
-        <style>
-        :root {{
-            --gc-bg: {THEME_COLORS["bg"]};
-            --gc-primary: {THEME_COLORS["primary"]};
-            --gc-success: {THEME_COLORS["success"]};
-            --gc-warning: {THEME_COLORS["warning"]};
-            --gc-danger: {THEME_COLORS["danger"]};
-            --gc-card: {THEME_COLORS["card"]};
-            --gc-border: {THEME_COLORS["border"]};
-        }}
-        .stApp {{
-            background: var(--gc-bg);
-            color: var(--gc-primary);
-        }}
-        [data-testid="stSidebar"] {{
-            background: linear-gradient(180deg, rgba(14,58,91,0.04), rgba(255,255,255,0.88));
-            border-right: 1px solid var(--gc-border);
-        }}
-        [data-testid="stHeader"] {{
-            background: rgba(247,245,239,0.92);
-        }}
-        [data-testid="stMetric"] {{
-            background: var(--gc-card);
-            border: 1px solid var(--gc-border);
-            border-radius: 12px;
-            padding: 0.4rem 0.6rem;
-        }}
-        [data-testid="stExpander"] {{
-            border: 1px solid var(--gc-border);
-            border-radius: 12px;
-            background: var(--gc-card);
-        }}
-        .stChatMessage {{
-            background: var(--gc-card);
-            border: 1px solid var(--gc-border);
-            border-radius: 16px;
-        }}
-        .gc-badge {{
-            display: inline-block;
-            margin: 0 0 0.5rem 0;
-            padding: 0.2rem 0.65rem;
-            border-radius: 999px;
-            border: 1px solid currentColor;
-            font-size: 0.82rem;
-            font-weight: 600;
-            letter-spacing: 0.01em;
-            background: rgba(255,255,255,0.92);
-        }}
-        .gc-badge-success {{ color: var(--gc-success); }}
-        .gc-badge-warning {{ color: var(--gc-warning); }}
-        .gc-badge-danger {{ color: var(--gc-danger); }}
-        .gc-badge-neutral {{ color: var(--gc-primary); }}
-        .gc-panel-caption {{
-            color: var(--gc-primary);
-            opacity: 0.82;
-            font-size: 0.92rem;
-        }}
-        .gc-title-caption {{
-            color: var(--gc-primary);
-            opacity: 0.78;
-        }}
-        </style>
+        <div class="gc-hero">
+          <div class="gc-hero__grid"></div>
+          <div class="gc-hero__body">
+            <div class="gc-hero__eyebrow">GINTEC · INTERNAL AI CONSOLE</div>
+            <div class="gc-hero__title">{PROJECT_NAME}</div>
+            <div class="gc-hero__sub">Demo v2.1 · Governed Agentic Workflow</div>
+            <div class="gc-hero__lede">企業內部知識助理，將 RAG、人工審查、Data Ops Sandbox 與 Audit Log
+            串成可治理的 Agentic Workflow。</div>
+            <div class="gc-hero__chips">{chips}</div>
+          </div>
+        </div>
         """,
         unsafe_allow_html=True,
     )
 
 
-def render_status_badge(label: str, tone: Literal["success", "warning", "danger", "neutral"]) -> None:
+def render_gate_banner(eyebrow: str, title: str, accent: str) -> None:
     st.markdown(
-        f'<span class="gc-badge gc-badge-{tone}">{label}</span>',
+        f'<div class="gc-banner gc-banner--{accent}">'
+        f'<span class="gc-banner__eyebrow">{html_escape(eyebrow)}</span>'
+        f'<span class="gc-banner__title">{html_escape(title)}</span></div>',
         unsafe_allow_html=True,
     )
+
+
+def render_gate_marker(accent: str) -> None:
+    """隱藏標記元素，供 CSS :has() 為其所在的 bordered container 上色（漸進增強）。"""
+    st.markdown(f'<span class="gc-marker gc-marker--{accent}"></span>', unsafe_allow_html=True)
+
+
+def render_kv_grid(rows: list[tuple[str, Any]]) -> None:
+    cells = "".join(
+        f'<div class="gc-kv"><div class="gc-kv__k">{html_escape(key)}</div>'
+        f'<div class="gc-kv__v">{html_escape(value)}</div></div>'
+        for key, value in rows
+    )
+    st.markdown(f'<div class="gc-kv-grid">{cells}</div>', unsafe_allow_html=True)
+
+
+def render_eyebrow(label: str) -> None:
+    st.markdown(f'<div class="gc-eyebrow">{html_escape(label)}</div>', unsafe_allow_html=True)
+
+
+def classify_document(filename: str) -> tuple[str, str, str]:
+    """UI-only：依檔名前綴決定文件分類標籤、用途短句與配色。"""
+    name = filename.lower()
+    if name.startswith("sop"):
+        return "SOP", "認證 scoping 與流程依據", "navy"
+    if name.startswith("policy"):
+        return "Policy", "AI 對外回覆與承諾邊界", "gold"
+    if name.startswith("faq"):
+        return "FAQ", "高風險轉人工規則", "rose"
+    return "DOC", "內部知識文件", "muted"
+
+
+def extract_missing_terms(reason: str) -> list[str]:
+    """UI-only：從 evidence reason 文字中解析未命中的關鍵詞，供 Low Confidence 面板顯示。"""
+    match = re.search(r"未命中：([^）)]+)", reason or "")
+    if not match:
+        return []
+    return [
+        term.strip()
+        for term in re.split(r"[、,，]", match.group(1))
+        if term.strip() and term.strip() != "無"
+    ]
+
+
+def render_status_badge(label: str, tone: Literal["success", "warning", "danger", "neutral"]) -> None:
+    st.markdown(build_badge_html(label, tone), unsafe_allow_html=True)
 
 
 def build_status_badge(
@@ -1473,78 +1889,82 @@ def add_user_message(content: str, documents: list[dict[str, Any]]) -> None:
 def render_log_panel(last_log: dict[str, Any]) -> None:
     json_text = json.dumps(last_log, ensure_ascii=False, indent=2)
 
-    with st.expander("Governance Trace", expanded=True):
-        st.markdown("**治理決策摘要**")
-        st.text(
-            "\n".join(
-                [
-                    "[ROUTE] 意圖判定：",
-                    str(last_log.get("intent_summary")),
-                    f"狀態：{last_log.get('route_status')}",
-                    "",
-                    "[PLAN] 決策路徑：",
-                    f"selected_tool = {last_log.get('selected_tool')}",
-                    "",
-                    "[GUARD] 合規評估：",
-                    f"權限等級：{last_log.get('permission_tier')}",
-                    f"風險類型：{last_log.get('risk_type')}",
-                    f"攔截原因：{last_log.get('risk_reason')}",
-                    "",
-                    "[ACTION] 動作結果：",
-                    f"approval_required = {last_log.get('approval_required')}",
-                    f"action_status = {last_log.get('action_status')}",
-                    "",
-                    "[PERF] 技術指標：",
-                    f"model = {last_log.get('model')}",
-                    f"latency_ms = {last_log.get('latency_ms')}",
-                    f"fallback_used = {last_log.get('fallback_used')}",
-                ]
-            )
+    render_eyebrow("Governance Trace · 決策摘要")
+
+    def pill(label: str, value: Any, variant: str = "") -> str:
+        cls = f"gc-pill gc-pill--{variant}" if variant else "gc-pill"
+        return f'<span class="{cls}">{html_escape(label)} <b>{html_escape(value)}</b></span>'
+
+    risk_type = last_log.get("risk_type")
+    risk_variant = "rose" if risk_type in {"System Modification", "Low Confidence"} else (
+        "gold" if risk_type in {"Guarantee/Commitment", "Commercial/Pricing"} else "green"
+    )
+    pills = "".join(
+        [
+            pill("route", last_log.get("route_status")),
+            pill("tier", last_log.get("permission_tier")),
+            pill("risk", risk_type, risk_variant),
+            pill("latency", f"{last_log.get('latency_ms')}ms"),
+            pill("fallback", last_log.get("fallback_used"),
+                 "gold" if last_log.get("fallback_used") else ""),
+        ]
+    )
+
+    def cline(tag: str, tag_class: str, text: str) -> str:
+        return (
+            f'<div class="gc-cline"><span class="gc-cline__tag gc-cline__tag--{tag_class}">{tag}</span>'
+            f'<span class="gc-cline__txt">{text}</span></div>'
         )
 
-        if last_log.get("evidence_sufficient") is not None:
-            st.text(
-                "\n".join(
-                    [
-                        "[EVIDENCE] 證據評估（情境五 self-correction）：",
-                        f"sufficient = {last_log.get('evidence_sufficient')}",
-                        f"hit_count = {last_log.get('evidence_hit_count')}",
-                        f"top_score = {last_log.get('evidence_top_score')}",
-                        f"coverage = {last_log.get('evidence_coverage')}",
-                        f"missing_terms = {last_log.get('evidence_missing_terms')}",
-                        f"judge_used = {last_log.get('evidence_judge_used')}",
-                        f"reason = {last_log.get('evidence_reason')}",
-                    ]
-                )
-            )
+    def field(key: str, value: Any) -> str:
+        return f'<em>{html_escape(key)}=</em>{html_escape(value)}'
 
-        if last_log.get("ticket_id"):
-            st.text(
-                "\n".join(
-                    [
-                        "[HITL]",
-                        f"ticket_id = {last_log.get('ticket_id')}",
-                        f"draft_type = {last_log.get('draft_type')}",
-                    ]
-                )
-            )
+    lines = [
+        cline("ROUTE", "route", html_escape(last_log.get("intent_summary"))),
+        cline("PLAN", "plan", field("selected_tool", last_log.get("selected_tool"))),
+        cline("GUARD", "guard",
+              field("tier", last_log.get("permission_tier")) + "&nbsp;&nbsp;"
+              + field("risk", last_log.get("risk_type"))),
+        cline("GUARD", "guard", html_escape(last_log.get("risk_reason"))),
+        cline("ACTION", "action",
+              field("approval_required", last_log.get("approval_required")) + "&nbsp;&nbsp;"
+              + field("action_status", last_log.get("action_status"))),
+        cline("PERF", "perf",
+              field("model", last_log.get("model")) + "&nbsp;&nbsp;"
+              + field("latency_ms", last_log.get("latency_ms")) + "&nbsp;&nbsp;"
+              + field("fallback_used", last_log.get("fallback_used"))),
+    ]
 
-        if last_log.get("sandbox_id"):
-            st.text(
-                "\n".join(
-                    [
-                        "[SANDBOX]",
-                        f"sandbox_id = {last_log.get('sandbox_id')}",
-                        f"current_action_tier = {last_log.get('current_action_tier')}",
-                        f"sql_validation_status = {last_log.get('sql_validation_status')}",
-                        f"approval_queue = {last_log.get('approval_queue')}",
-                    ]
-                )
-            )
+    if last_log.get("evidence_sufficient") is not None:
+        lines.append(
+            cline("EVIDENCE", "evidence",
+                  field("sufficient", last_log.get("evidence_sufficient")) + "&nbsp;&nbsp;"
+                  + field("coverage", last_log.get("evidence_coverage")) + "&nbsp;&nbsp;"
+                  + field("top_score", last_log.get("evidence_top_score")))
+        )
+        lines.append(cline("EVIDENCE", "evidence", html_escape(last_log.get("evidence_reason"))))
 
-    with st.expander("Engineering Metrics JSON", expanded=True):
-        st.code(json_text, language="json")
+    if last_log.get("ticket_id"):
+        lines.append(
+            cline("HITL", "hitl",
+                  field("ticket_id", last_log.get("ticket_id")) + "&nbsp;&nbsp;"
+                  + field("draft_type", last_log.get("draft_type")))
+        )
 
+    if last_log.get("sandbox_id"):
+        lines.append(
+            cline("SANDBOX", "sandbox",
+                  field("sandbox_id", last_log.get("sandbox_id")) + "&nbsp;&nbsp;"
+                  + field("sql_validation_status", last_log.get("sql_validation_status")))
+        )
+
+    st.markdown(
+        f'<div class="gc-console"><div class="gc-console__pills">{pills}</div>{"".join(lines)}</div>',
+        unsafe_allow_html=True,
+    )
+
+    render_eyebrow("Engineering Metrics · JSON")
+    st.code(json_text, language="json")
     st.download_button(
         label="下載 last_log.json",
         data=json_text,
@@ -1559,132 +1979,215 @@ def render_log_panel(last_log: dict[str, Any]) -> None:
 
 def render_sidebar(documents: list[dict[str, Any]], load_error: str | None) -> None:
     with st.sidebar:
-        st.header("Demo 說明")
-        st.markdown('<p class="gc-panel-caption">目前完成 RAG、HITL、Data Ops Sandbox、Evidence Gate 與 Governance Trace / Audit Log。</p>', unsafe_allow_html=True)
-        st.write("系統會先做受控路由，再依情境進入知識檢索、人工審查或 sandbox dry-run。")
-        st.write("高風險承諾不直接回答；資料修改不寫入 production；證據不足則升級為 Low Confidence 人工審查。")
+        st.markdown(
+            '<div class="gc-side-brand"><span class="gc-side-brand__mark">GC</span>'
+            '<span class="gc-side-brand__name">Gintec Copilot</span></div>',
+            unsafe_allow_html=True,
+        )
+        render_eyebrow("Control Panel")
+
+        info_cards = [
+            ("ROUTING", "受控路由：先判定意圖與權限，再決定檢索、人工審查或 sandbox。", "navy"),
+            ("HUMAN REVIEW", "人工審查：高風險承諾不直接回答，改產生審查 ticket 與澄清信草稿。", "gold"),
+            ("DATA OPS", "資料修改只產生 SQL dry-run preview，不寫入 production。", "rose"),
+            ("EVIDENCE GATE", "證據不足時自動升級為 Low Confidence 人工審查。", "green"),
+        ]
+        for key, value, accent in info_cards:
+            st.markdown(
+                f'<div class="gc-info-card gc-info-card--{accent}">'
+                f'<div class="gc-info-card__k">{html_escape(key)}</div>'
+                f'<div class="gc-info-card__v">{html_escape(value)}</div></div>',
+                unsafe_allow_html=True,
+            )
 
         st.divider()
-        st.subheader("知識庫文件")
+        render_eyebrow("Knowledge Base")
         if load_error:
             st.warning(load_error)
         else:
-            st.metric("已載入文件數", len(documents))
+            st.metric("已載入知識文件", len(documents))
             for document in documents:
-                st.markdown(f"**{document['title']}**")
-                st.caption(document["filename"])
+                tag, _purpose, accent = classify_document(document["filename"])
+                st.markdown(
+                    f'<div class="gc-kb-mini"><span class="gc-tag gc-tag--{accent}">{tag}</span>'
+                    f'<span class="gc-kb-mini__name">{html_escape(document["title"])}</span></div>',
+                    unsafe_allow_html=True,
+                )
 
         st.divider()
-        st.subheader("測試問題")
+        render_eyebrow("受控測試情境")
         for index, question in enumerate(TEST_QUESTIONS, start=1):
             if st.button(f"{index}. {question}", key=f"test_question_{index}", use_container_width=True):
                 add_user_message(question, documents)
                 st.rerun()
 
         st.divider()
-        st.subheader("Log Panel")
-        render_log_panel(st.session_state.last_log)
-
-        if st.button("清除對話", use_container_width=True):
+        if st.button("清除對話", key="clear_conversation", use_container_width=True):
             st.session_state.messages = []
             st.session_state.last_log = MOCK_LOG.copy()
             st.rerun()
 
 
 def render_document_preview(documents: list[dict[str, Any]], load_error: str | None) -> None:
-    st.subheader("知識庫文件預覽")
-    st.caption("目前展示三份本地 Markdown 文件，供 RAG、Evidence Gate 與人工審查草稿引用。")
+    render_eyebrow("Knowledge Assets")
+    st.markdown('<div class="gc-section-title">知識庫文件</div>', unsafe_allow_html=True)
+    st.caption("三份本地 Markdown 文件，供 RAG、Evidence Gate 與人工審查草稿引用。")
 
     if load_error:
         st.error(load_error)
         return
 
     for document in documents:
-        with st.expander(document["title"], expanded=False):
+        tag, purpose, accent = classify_document(document["filename"])
+        st.markdown(
+            f'<div class="gc-kb-card gc-kb-card--{accent}">'
+            f'<div class="gc-kb-card__head"><span class="gc-tag gc-tag--{accent}">{tag}</span>'
+            f'<span class="gc-kb-card__title">{html_escape(document["title"])}</span></div>'
+            f'<div class="gc-kb-card__file">{html_escape(document["filename"])}</div>'
+            f'<div class="gc-kb-card__purpose">{html_escape(purpose)}</div></div>',
+            unsafe_allow_html=True,
+        )
+        with st.expander("原始 Markdown 內容", expanded=False):
             st.caption(f"檔案路徑：{document['path']}")
-            st.text(document["preview"])
             st.text_area(
                 label="原始 Markdown 內容",
                 value=document["content"],
-                height=180,
+                height=200,
                 disabled=True,
                 key=f"raw_markdown_{document['doc_id']}",
+                label_visibility="collapsed",
             )
 
 
 def render_hitl_ticket(ticket: dict[str, Any]) -> None:
     is_low_confidence = ticket.get("risk_type") == "Low Confidence"
-    if is_low_confidence:
-        render_status_badge("資料不足，已轉人工", "warning")
-        st.warning(
-            "知識庫不足（Low Confidence Fallback）：檢索分數低於門檻，"
-            "系統已自動從 search 升級為人工審查路由。"
-        )
-        gate_title = "[HITL GATE] 人工審查佇列（知識庫不足）"
-        draft_label = "知識庫不足通知草稿"
-    else:
-        render_status_badge("需人工審查", "warning")
-        st.error("HITL GATE（Tier 1）：偵測到高風險商務承諾或需人工確認事項，已攔截直接回答。")
-        gate_title = "[HITL GATE] 人工審查佇列"
-        draft_label = "商務澄清信草稿"
+    accent = "lowconf" if is_low_confidence else "gold"
 
-    with st.expander(gate_title, expanded=True):
-        st.write(f"**ticket_id:** {ticket['ticket_id']}")
-        st.write(f"**risk_type:** {ticket['risk_type']}")
-        st.write(f"**risk_reason:** {ticket['risk_reason']}")
-        st.write(f"**suggested_owner:** {ticket['suggested_owner']}")
-        st.write(f"**draft_type:** {ticket['draft_type']}")
-        st.write(f"**status:** {ticket['status']}")
+    with st.container(border=True):
+        render_gate_marker(accent)
+        if is_low_confidence:
+            render_gate_banner(
+                "EVIDENCE GATE · LOW CONFIDENCE", "人工審查佇列（知識庫依據不足）", "lowconf"
+            )
+        else:
+            render_gate_banner(
+                "HITL GATE · PENDING HUMAN REVIEW", "人工審查佇列（Tier 1）", "gold"
+            )
+
+        render_kv_grid(
+            [
+                ("ticket_id", ticket["ticket_id"]),
+                ("risk_type", ticket["risk_type"]),
+                ("suggested_owner", ticket["suggested_owner"]),
+                ("status", ticket["status"]),
+            ]
+        )
+
+        if is_low_confidence:
+            render_eyebrow("Evidence Gate")
+            render_kv_grid([("evidence_sufficient", "false")])
+            missing_terms = extract_missing_terms(ticket["risk_reason"])
+            if missing_terms:
+                chips = "".join(f'<span class="gc-term">{html_escape(term)}</span>' for term in missing_terms)
+                st.markdown(
+                    f'<div class="gc-eyebrow">missing_terms</div><div class="gc-terms">{chips}</div>',
+                    unsafe_allow_html=True,
+                )
+            st.markdown(
+                f'<div class="gc-note">evidence_reason：{html_escape(ticket["risk_reason"])}</div>',
+                unsafe_allow_html=True,
+            )
+            draft_label = "知識庫不足通知草稿"
+        else:
+            st.markdown(
+                f'<div class="gc-note">risk_reason：{html_escape(ticket["risk_reason"])}</div>',
+                unsafe_allow_html=True,
+            )
+            draft_label = "商務澄清信草稿"
+
+        render_eyebrow(f"Draft for Review · {draft_label}")
         st.text_area(
             draft_label,
             value=ticket["draft_preview"],
-            height=360,
+            height=320,
             key=f"draft_preview_{ticket['ticket_id']}",
+            label_visibility="collapsed",
         )
 
-        st.markdown("**引用來源 / Retrieved docs**")
+        render_eyebrow("Retrieved Evidence")
         if not ticket["retrieved_docs"]:
             st.caption("無有效命中文件。")
         for result in ticket["retrieved_docs"]:
-            st.caption(
-                f"{result['citation']} | {result['section_title']} | score={result['score']}"
+            st.markdown(
+                f'<div class="gc-evi"><b>{html_escape(result["citation"])}</b> · '
+                f'{html_escape(result["section_title"])} · score={html_escape(result["score"])}</div>',
+                unsafe_allow_html=True,
             )
 
 
 def render_data_ops_sandbox(sandbox_result: dict[str, Any]) -> None:
-    render_status_badge("已禁止 production 寫入", "danger")
-    st.error("SANDBOX GATE（Tier 3）：偵測到內部系統修改意圖，已禁止 production 寫入。")
-    with st.expander("[SANDBOX GATE] Data Ops Dry-run Preview", expanded=True):
-        st.write(f"**sandbox_id:** {sandbox_result['sandbox_id']}")
-        st.write(f"**permission_tier:** {sandbox_result['permission_tier']}")
-        st.write(f"**current_action_tier:** {sandbox_result['current_action_tier']}")
-        st.write(f"**sql_validation_status:** {sandbox_result['sql_validation_status']}")
+    with st.container(border=True):
+        render_gate_marker("rose")
+        render_gate_banner("SANDBOX GATE · TIER 3", "Data Ops Dry-run Preview", "rose")
+
+        render_kv_grid(
+            [
+                ("sandbox_id", sandbox_result["sandbox_id"]),
+                ("permission_tier", sandbox_result["permission_tier"]),
+                ("current_action_tier", sandbox_result["current_action_tier"]),
+                ("sql_validation_status", sandbox_result["sql_validation_status"]),
+            ]
+        )
+        st.markdown(
+            '<div class="gc-note">Production write blocked · Dry-run only · 未連接或寫入任何 production database。</div>',
+            unsafe_allow_html=True,
+        )
+
+        render_eyebrow("Generated SQL · Dry-run")
         st.code(sandbox_result["generated_sql"], language="sql")
-        st.subheader("Before")
+
+        render_eyebrow("Before")
         st.table(sandbox_result["before_rows"])
-        st.subheader("After")
+        render_eyebrow("After")
         st.table(sandbox_result["after_rows"])
-        st.warning("此結果僅為 dry-run preview，需主管核准後才可由授權人員處理。")
+
+        st.markdown(
+            '<div class="gc-note">此結果僅為 dry-run preview，需主管核准後才可由授權人員處理。</div>',
+            unsafe_allow_html=True,
+        )
 
 
 def render_chat(documents: list[dict[str, Any]]) -> None:
-    st.subheader("企業知識助理")
-    st.caption("所有回覆都會保留狀態語意：已引用來源、需人工審查、資料不足轉人工、禁止 production 寫入或零檢索。")
+    render_eyebrow("Review Workbench")
+    st.markdown('<div class="gc-section-title">企業知識助理 · 對話工作台</div>', unsafe_allow_html=True)
+    st.caption(
+        "每則回覆都保留治理語意：已引用來源 / 需人工審查 / 資料不足轉人工 / 禁止 production 寫入 / 零檢索。"
+    )
 
     for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            if message.get("status_badge"):
-                render_status_badge(
-                    message["status_badge"]["label"],
-                    message["status_badge"]["tone"],
-                )
-            st.write(message["content"])
-            if message.get("hitl_ticket"):
-                render_hitl_ticket(message["hitl_ticket"])
-            if message.get("sandbox_result"):
-                render_data_ops_sandbox(message["sandbox_result"])
+        if message["role"] == "user":
+            st.markdown(
+                f'<div class="gc-msg gc-msg--user"><div class="gc-msg__label">USER</div>'
+                f'<div class="gc-msg__body">{html_escape(message["content"])}</div></div>',
+                unsafe_allow_html=True,
+            )
+            continue
 
-    prompt = st.chat_input("請輸入產品認證或 scoping 相關問題")
+        badge = message.get("status_badge") or {}
+        tone = badge.get("tone", "neutral")
+        badge_html = build_badge_html(badge["label"], tone) if badge.get("label") else ""
+        st.markdown(
+            f'<div class="gc-msg gc-msg--assistant gc-tone-{tone}">'
+            f'<div class="gc-msg__head"><span class="gc-msg__label">Gintec Copilot</span>{badge_html}</div>'
+            f'<div class="gc-msg__body">{html_escape(message["content"])}</div></div>',
+            unsafe_allow_html=True,
+        )
+        if message.get("hitl_ticket"):
+            render_hitl_ticket(message["hitl_ticket"])
+        if message.get("sandbox_result"):
+            render_data_ops_sandbox(message["sandbox_result"])
+
+    prompt = st.chat_input("輸入產品認證或 scoping 問題（系統會先做受控路由）")
     if prompt:
         add_user_message(prompt, documents)
         st.rerun()
@@ -1693,17 +2196,20 @@ def render_chat(documents: list[dict[str, Any]]) -> None:
 def main() -> None:
     st.set_page_config(page_title=PROJECT_NAME, page_icon="G", layout="wide")
     initialize_state()
-    render_global_styles()
+    inject_custom_css()
 
     documents, load_error = load_markdown_documents()
 
-    st.title(PROJECT_NAME)
-    st.markdown(f'<p class="gc-title-caption">{DEMO_CAPTION}</p>', unsafe_allow_html=True)
-
+    render_hero()
     render_sidebar(documents, load_error)
-    render_document_preview(documents, load_error)
-    st.divider()
-    render_chat(documents)
+
+    tab_console, tab_audit, tab_kb = st.tabs(["對話工作台", "Audit Log", "知識庫文件"])
+    with tab_console:
+        render_chat(documents)
+    with tab_audit:
+        render_log_panel(st.session_state.last_log)
+    with tab_kb:
+        render_document_preview(documents, load_error)
 
 
 if __name__ == "__main__":
