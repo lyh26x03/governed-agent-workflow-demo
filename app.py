@@ -14,8 +14,8 @@ import streamlit as st
 from pydantic import BaseModel, Field
 
 
-PROJECT_NAME = "Gintec Copilot"
-DEMO_CAPTION = "Demo v2.1 - 企業內部知識助理：RAG、HITL、Data Ops Sandbox、Evidence Gate、Governance Trace 與 Audit Log。"
+PROJECT_NAME = "Certification Workflow Agent"
+DEMO_CAPTION = "Prototype demo for an enterprise certification workflow: RAG, HITL, Data Ops Sandbox, Evidence Gate, Governance Trace, and Audit Log."
 MOCK_REPLY = "這是 Task 1 的假回覆：目前尚未接上 RAG / LLM。"
 DOCS_DIR = Path("data") / "docs"
 DEFAULT_LLM_MODE = "mock"
@@ -41,9 +41,9 @@ DESIGN_TOKENS = {
 }
 
 # 集中式樣式表（Ivory Control Room）。色彩由 DESIGN_TOKENS 注入為 CSS 變數，見 inject_custom_css。
-GINTEC_CSS = r'''
+APP_CSS = r'''
 /* ============================================================
-   Gintec Copilot · Ivory Control Room (Refined / Task 8C)
+   Certification Workflow Agent - Ivory Control Room
    安靜、精準、帶一點典雅的企業 AI workflow dashboard。
    去除:金粗邊 / 羊皮紙填色 / 厚深藍 tab bar / 大外框 / 多層卡片框。
    ============================================================ */
@@ -583,11 +583,11 @@ def initialize_state() -> None:
 
 def inject_custom_css() -> None:
     """集中式 Ivory Control Room 樣式。色彩一律由 DESIGN_TOKENS 推導為 CSS 變數，
-    版面樣式存在模組常數 GINTEC_CSS，方便單點調整與審閱。"""
+    版面樣式存在模組常數 APP_CSS，方便單點調整與審閱。"""
     root_vars = ":root{" + ";".join(
         f"--gc-{key.replace('_', '-')}: {value}" for key, value in DESIGN_TOKENS.items()
     ) + ";}"
-    st.markdown(f"<style>{root_vars}{GINTEC_CSS}</style>", unsafe_allow_html=True)
+    st.markdown(f"<style>{root_vars}{APP_CSS}</style>", unsafe_allow_html=True)
 
 
 def html_escape(text: Any) -> str:
@@ -613,7 +613,7 @@ def render_hero() -> None:
         <div class="gc-hero">
           <div class="gc-hero__grid"></div>
           <div class="gc-hero__body">
-            <div class="gc-hero__eyebrow">GINTEC · INTERNAL AI CONSOLE</div>
+            <div class="gc-hero__eyebrow">ENTERPRISE CERTIFICATION WORKFLOW</div>
             <div class="gc-hero__title">{PROJECT_NAME}</div>
             <div class="gc-hero__sub">Demo v2.1 · Governed Agentic Workflow</div>
             <div class="gc-hero__lede">企業內部知識助理，將 RAG、人工審查、Data Ops Sandbox 與 Audit Log
@@ -1950,7 +1950,7 @@ def render_log_panel(last_log: dict[str, Any]) -> None:
     st.download_button(
         label="下載 last_log.json",
         data=json_text,
-        file_name="gintec_copilot_last_log.json",
+        file_name="certification_workflow_agent_last_log.json",
         mime="application/json",
         use_container_width=True,
     )
@@ -1977,8 +1977,8 @@ def render_system_status() -> None:
 def render_sidebar(documents: list[dict[str, Any]], load_error: str | None) -> None:
     with st.sidebar:
         st.markdown(
-            '<div class="gc-side-brand"><span class="gc-side-brand__mark">GC</span>'
-            '<span class="gc-side-brand__name">Gintec Copilot</span></div>',
+            '<div class="gc-side-brand"><span class="gc-side-brand__mark">CW</span>'
+            f'<span class="gc-side-brand__name">{PROJECT_NAME}</span></div>',
             unsafe_allow_html=True,
         )
         render_eyebrow("Control Panel")
@@ -2178,7 +2178,7 @@ def render_chat(documents: list[dict[str, Any]]) -> None:
         badge_html = build_badge_html(badge["label"], tone) if badge.get("label") else ""
         st.markdown(
             f'<div class="gc-msg gc-msg--assistant gc-tone-{tone}">'
-            f'<div class="gc-msg__head"><span class="gc-msg__label">Gintec Copilot</span>{badge_html}</div>'
+            f'<div class="gc-msg__head"><span class="gc-msg__label">{PROJECT_NAME}</span>{badge_html}</div>'
             f'<div class="gc-msg__body">{html_escape(message["content"])}</div></div>',
             unsafe_allow_html=True,
         )

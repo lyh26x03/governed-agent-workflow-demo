@@ -1,166 +1,163 @@
-# Gintec Copilot
+# Governed Agent Workflow Demo
 
-## 專案定位
+> Prototype for a governed enterprise AI agent workflow with RAG, HITL escalation, sandboxed data operations, permission tiers, and audit logs.
 
-Gintec Copilot 是一個以電子產品認證 scoping 為情境的 **Governed Agentic Workflow Demo**。它不是一般聊天機器人；重點是讓 Agent 在協助使用者時，每一步都有明確的路由、權限、風險邊界與可稽核紀錄。
+This Streamlit portfolio project demonstrates how an AI agent can support an electronic product certification company while remaining inside explicit evidence, permission, and risk boundaries. The prototype routes requests into read-only knowledge search, human-reviewed drafting, sandboxed data-operation previews, or an out-of-scope guardrail, with a governance trace for every result.
 
-目前 Demo 整合：
+## Disclaimer
 
-- 本地 Markdown RAG 與 citation
-- Deterministic route guardrails
-- HITL（Human-in-the-Loop）人工審查流程
-- Data Ops Sandbox 與 SQL dry-run preview
-- Evidence Gate 與 Low Confidence escalation
-- Governance Trace 與 Engineering Metrics JSON audit log
+This repository is a prototype/demo only. It uses simulated documents and simulated workflows. It does not connect to a production database, send external messages, or produce formal compliance conclusions. Outputs must not be treated as certification, legal, commercial, or operational commitments.
 
-## 專案架構
+## What This Demo Shows
 
-```text
-user query
-→ route_user_request
-→ search / HITL / sandbox / out-of-scope
-→ evidence gate（search 路由後）
-→ answer / ticket / dry-run preview
-→ governance trace + metrics log
+- Local Markdown RAG search with source citations
+- Structured request routing through `route_user_request`
+- An Evidence Gate that can escalate low-confidence retrieval
+- Human-in-the-loop review for high-risk commitments
+- A Data Ops Sandbox with SQL dry-run validation and Before/After preview
+- Permission tiers and risk-aware routing
+- Governance Trace and Engineering Metrics audit logs
+- Deterministic mock mode, with an optional Gemini/Gemma-backed mode
+
+## System Architecture
+
+```mermaid
+flowchart LR
+    U[User] --> UI[Streamlit UI]
+    UI --> R[Router]
+    R <--> L[LLM or mock fallback]
+    R --> S[RAG Search]
+    S --> KB[Markdown Knowledge Base]
+    S --> E[Evidence Gate]
+    E --> A[Read-only answer]
+    E --> H[HITL Gate]
+    R --> H
+    R --> D[Data Ops Sandbox]
+    R --> O[Out-of-scope Guardrail]
+    A --> G[Governance Trace]
+    H --> G
+    D --> G
+    O --> G
+    G --> M[Engineering Metrics]
 ```
 
-### 核心路由
+## Data Flow
 
-| Route | 用途 | 結果 |
+```mermaid
+flowchart TD
+    Q[User query] --> RU[route_user_request]
+    RU --> RD{Route decision}
+    RD -->|search| RS[RAG search]
+    RD -->|generate_draft_and_escalate| HG[HITL gate]
+    RD -->|data_ops_dry_run| DS[Sandbox dry-run]
+    RD -->|out_of_scope| OS[No-retrieval response]
+    RS --> EG{Evidence Gate}
+    EG -->|sufficient| AN[Answer with citations]
+    EG -->|insufficient| HG
+    HG --> ES[Draft and escalation ticket]
+    DS --> DP[SQL validation and Before/After preview]
+    AN --> AL[Audit log]
+    ES --> AL
+    DP --> AL
+    OS --> AL
+```
+
+## Permission / Risk Flow
+
+```mermaid
+flowchart TD
+    Q[Request] --> C{Permission and risk classification}
+    C -->|Tier 0| T0[Read-only RAG answer]
+    C -->|Tier 1| T1[Draft generation and human review]
+    C -->|Tier 3| T3[High-risk system modification intent]
+    C -->|Out-of-scope| OOS[No retrieval]
+    T3 --> DR[Sandbox dry-run only]
+```
+
+## Core Routes
+
+| Route | Typical intent | Demo behavior |
 |---|---|---|
-| `search` | 一般法規、認證、SOP 或 scoping 查詢 | Tier 0 RAG 回答與 citation |
-| `generate_draft_and_escalate` | 保證通過、報價、商務承諾、正式合規結論，或 Low Confidence | Tier 1 HITL ticket 與安全草稿 |
-| `data_ops_dry_run` | 修改系統、DB 或審核狀態 | Tier 3 意圖攔截、SQL dry-run、Before / After |
-| `out_of_scope` | 與認證業務無關的問題 | 零檢索回覆 |
+| `search` | Certification scoping or SOP questions | Tier 0 RAG answer with citations, subject to the Evidence Gate |
+| `generate_draft_and_escalate` | Guarantees, pricing, external commitments, formal conclusions, or low confidence | Tier 1 safe draft and HITL ticket |
+| `data_ops_dry_run` | Internal system modification intent | Tier 3 intent is blocked from production and shown as a validated dry-run preview |
+| `out_of_scope` | Unrelated requests | Guardrail response with no knowledge-base retrieval |
 
-### Evidence Gate
+## Evidence Gate
 
-`search` 完成檢索後，Evidence Gate 會評估 `hit_count`、`top_score`、`coverage`、`missing_terms` 與 `evidence_reason`。有檢索結果不代表證據足夠；若證據不足，系統會自動升級為 `Low Confidence` HITL，而不是直接回答。
+Retrieved evidence is not automatically sufficient evidence. After a `search` route retrieves documents, the Evidence Gate evaluates signals such as hit count, top score, coverage, and missing terms. If the evidence does not adequately support the request, the workflow escalates to a low-confidence HITL path instead of presenting a confident answer. The deterministic gate remains the default; an optional LLM evidence judge is feature-flagged.
 
-Deterministic gate 是預設底線。LLM evidence judge 是 feature-flagged 可選層，預設關閉，且只能加嚴 deterministic 判定，不能放寬不足判定。
+## Demo Scenarios
 
-## 專案結構
+1. Ask a supported Bluetooth certification scoping question to see a Tier 0 cited answer.
+2. Ask a niche question unsupported by the simulated knowledge base to trigger low-confidence escalation.
+3. Ask for a guaranteed certification outcome or formal quote to create a Tier 1 review ticket and safe draft.
+4. Ask to modify an internal case record to see a Tier 3 SQL dry-run and Before/After preview.
+5. Ask an unrelated question to confirm the out-of-scope route performs no retrieval.
 
-```text
-gintec_copilot/
-├─ app.py
-├─ requirements.txt
-├─ README.md
-├─ DEMO_SCRIPT.md
-└─ data/
-   └─ docs/
-      ├─ SOP_藍牙產品歐美認證初步Scoping_v2.md
-      ├─ Policy_AI內部使用與對外回覆邊界原則.md
-      └─ FAQ_高風險轉人工處理指南.md
-```
+More presenter guidance is available in [`DEMO_SCRIPT.md`](DEMO_SCRIPT.md).
 
-## 安裝與啟動
+## Setup and Run
 
-建議使用 Python 3.10 以上版本。
+Requirements: Python 3.10 or newer.
 
 ```bash
+python -m venv .venv
+# Windows PowerShell:
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 streamlit run app.py
 ```
 
-啟動後通常可從 `http://localhost:8501` 開啟 Demo。
+The app opens at `http://localhost:8501`. Windows users can also run `start_demo.bat`.
 
-Windows 使用者也可雙擊 `start_gintec.bat`，它會啟動 Streamlit 並開啟瀏覽器。
+## Environment Variables
 
-## `.env` 設定
+Copy `.env.example` to `.env` and keep `.env` local. Placeholder configuration:
 
 ```dotenv
-# mock | gemma | auto
 LLM_MODE=mock
-
-# LLM_MODE=gemma 或 auto 時使用
 GEMINI_API_KEY=
 GEMMA_MODEL=gemma-4-26b-a4b-it
-
-# Evidence Gate：預設採 deterministic 評估
 USE_LLM_EVIDENCE_JUDGE=false
 EVIDENCE_SCORE_FLOOR=3
 EVIDENCE_COVERAGE_THRESHOLD=0.5
 ```
 
-### Demo Mode 用途
+- `LLM_MODE=mock` runs the deterministic portfolio demo without an API key.
+- `LLM_MODE=gemma` uses the configured model and requires `GEMINI_API_KEY`.
+- `LLM_MODE=auto` attempts the configured model and falls back to deterministic behavior.
+- Never commit `.env` or `.streamlit/secrets.toml`.
 
-- `mock`：完全使用 deterministic 回覆，不需要 API key。適合離線展示、固定流程驗證，以及需要穩定重現結果的 Demo。
-- `gemma`：使用 `GEMINI_API_KEY` 與 `GEMMA_MODEL` 呼叫 Gemma。適合展示模型生成效果；呼叫失敗時會保留錯誤資訊，不自動切換成 mock 回覆。
-- `auto`：優先呼叫 Gemma，呼叫失敗時依既有 fallback 流程改用 deterministic 回覆。適合網路或 API 可用性不確定、但仍需確保 Demo 可繼續進行的場合。
-- 模式由啟動環境的 `LLM_MODE` 決定；UI 的 System Status 僅顯示目前狀態，不提供模式切換。
-- `USE_LLM_EVIDENCE_JUDGE=false`：即使 `LLM_MODE=gemma`，Evidence Gate 也不會呼叫 LLM judge。
-- Evidence judge 只有在 feature flag 開啟、模式為 `gemma` 或 `auto`，且有 API key 時才可能呼叫。
+## Repository Structure
 
-## Demo 主線劇本
+```text
+.
+|-- app.py                 # Streamlit UI, routing, gates, sandbox, and logs
+|-- data/docs/             # Simulated Markdown knowledge base
+|-- DEMO_SCRIPT.md         # Presenter scenarios and talking points
+|-- DEMO_SPEC.md           # Earlier prototype specification
+|-- DEMO_SPEC_v2.1.md      # Current detailed demo specification
+|-- requirements.txt
+|-- .env.example
+`-- start_demo.bat
+```
 
-### A. 正常 RAG
+## Limitations / Intentionally Not Implemented
 
-**輸入**
+- No production database connection or write path
+- No external email, messaging, ticketing, or approval-system integration
+- No formal compliance, legal, pricing, or certification conclusions
+- Small simulated Markdown knowledge base
+- Simplified retrieval scoring and demo-calibrated evidence thresholds
+- Fake sandbox records and previews only
+- No production authentication, authorization, or tenant isolation
 
-> 客戶有一款藍牙耳機要出口到歐洲，初步 scoping 要看哪些指令？
+## Suggested Production Extensions
 
-**預期**
-
-`search` / `Tier 0` / `answered` / 有 citation / `evidence_sufficient=true`
-
-### B. Low Confidence
-
-**輸入**
-
-> 這款耳機適用某個特殊衛星頻段的日本法規嗎？
-
-**預期**
-
-初判 `search`，Evidence Gate 判定不足後升級為 `generate_draft_and_escalate` / `Low Confidence`，並顯示知識庫不足通知。
-
-### C. HITL 商務紅線
-
-**輸入**
-
-> 可以保證這個產品一定會通過 FCC 嗎？
-
-**預期**
-
-`generate_draft_and_escalate` / `Tier 1` / HITL ticket / 商務澄清信草稿 / `pending_human_review`
-
-### D. Data Ops Sandbox
-
-**輸入**
-
-> 請幫我直接修改內部系統，把審核狀態改成通過。
-
-**預期**
-
-`data_ops_dry_run` / `Tier 3` / SQL dry-run / Before-After preview / 不寫入 production DB
-
-### E. Out-of-scope
-
-**輸入**
-
-> 請幫我推薦今天晚餐。
-
-**預期**
-
-`out_of_scope` / `no_retrieval` / `retrieved_docs=[]`
-
-完整現場講解話術請見 [DEMO_SCRIPT.md](DEMO_SCRIPT.md)。
-
-## Governance 與 Audit Log
-
-Log Panel 分成兩種視角：
-
-- **Governance Trace**：提供非技術主管閱讀的路由、風險、權限與動作摘要。
-- **Engineering Metrics JSON**：提供技術主管追蹤 route、model、latency、retrieval、fallback、evidence 與 sandbox 狀態，可下載為 `last_log.json`。
-
-這些內容是 audit log / governance trace，不是模型的 chain-of-thought。
-
-## 已知限制
-
-- Demo knowledge base 只有三份模擬 Markdown 文件。
-- Evidence 門檻是 Demo 初始校準值，不是 production threshold。
-- Production 需使用真實文件與測試集重新校準 evidence threshold。
-- 目前不主動展示完整多輪 conversation state。
-- 目前不連接真實資料庫、主管審批系統或寄信系統。
-- Data Ops Sandbox 只對 fake table 產生 dry-run preview。
-- Demo 未使用向量資料庫；目前檢索方式是為了保持流程透明、依賴精簡與展示穩定。
+- Add identity-aware access control and document-level permissions
+- Use a production retrieval layer with evaluation datasets and calibrated thresholds
+- Integrate durable HITL approval queues and ticketing systems
+- Add policy versioning, immutable audit storage, monitoring, and alerts
+- Introduce secure, separately authorized execution services after approval
+- Add automated red-team, regression, and evidence-quality evaluations

@@ -1,4 +1,4 @@
-# 專案名稱：Gintec Copilot - 安規認證知識助手 (Demo v1.1)
+# 專案名稱：Governed Agent Workflow Demo - 安規認證知識助手 (Demo v1.1)
 
 ## 專案定位
 本系統為企業內部 AI 助手原型，核心設計哲學為「人類始終在迴路（Human-in-the-loop）」。系統授權 LLM 進行一般知識檢索的工具選擇，但高風險業務邊界受明確 Policy 約束。系統不直接面客，聚焦於協助業務與工程師進行初步 Scoping、提供「檢索接地」的解答，並將高風險或低信心決策精準攔截。

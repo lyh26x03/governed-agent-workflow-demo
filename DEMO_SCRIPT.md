@@ -1,4 +1,4 @@
-# Gintec Copilot 現場 Demo Script
+# Governed Agent Workflow Demo - 現場 Demo Script
 
 ## 30 秒開場白
 
@@ -119,7 +119,7 @@
 >
 > Deterministic gate 預設開啟，讓結果可重現、成本穩定，也適合 Demo 與回歸測試。LLM judge 預設關閉，主要是成本、延遲與穩定性考量；它不是死碼，而是 feature-flagged 的可選加嚴層。即使開啟，judge 只能把原本通過的結果判得更嚴，不能放寬 deterministic 已判定不足的證據。
 
-## 面試常見追問與回答
+## Portfolio Review 常見追問與回答
 
 ### 為什麼 `EVIDENCE_SCORE_FLOOR` 是 3？
 
