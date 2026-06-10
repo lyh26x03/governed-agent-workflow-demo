@@ -1,119 +1,164 @@
 # Governed Agent Workflow Demo
 
-> Prototype for a governed enterprise AI agent workflow with RAG, HITL escalation, sandboxed data operations, permission tiers, and audit logs.
+> Streamlit prototype for a governed enterprise AI workflow with local RAG, HITL escalation, a data-operations sandbox, permission tiers, an Evidence Gate, and an audit view.
 
-This Streamlit portfolio project demonstrates how an AI agent can support an electronic product certification company while remaining inside explicit evidence, permission, and risk boundaries. The prototype routes requests into read-only knowledge search, human-reviewed drafting, sandboxed data-operation previews, or an out-of-scope guardrail, with a governance trace for every result.
+This demo supports an electronic-product certification workflow while keeping every request inside explicit evidence, permission, and risk boundaries. Its behavior is defined by [`app.py`](app.py); [`DEMO_SPEC_v2.1.md`](DEMO_SPEC_v2.1.md) is the only active demo specification.
 
 ## Disclaimer
 
-This repository is a prototype/demo only. It uses simulated documents and simulated workflows. It does not connect to a production database, send external messages, or produce formal compliance conclusions. Outputs must not be treated as certification, legal, commercial, or operational commitments.
+This repository is a prototype using simulated Markdown documents, records, tickets, and workflows. It does not connect to a production database, write real records, send external messages, or create real approval tasks. It does not produce formal compliance, legal, commercial, certification, pricing, or operational conclusions.
 
-## What This Demo Shows
+## Implemented Behavior
 
-- Local Markdown RAG search with source citations
-- Structured request routing through `route_user_request`
-- An Evidence Gate that can escalate low-confidence retrieval
-- Human-in-the-loop review for high-risk commitments
-- A Data Ops Sandbox with SQL dry-run validation and Before/After preview
-- Permission tiers and risk-aware routing
-- Governance Trace and Engineering Metrics audit logs
-- Deterministic mock mode, with an optional Gemini/Gemma-backed mode
+- A deterministic rule-based intent router selects one of four routes.
+- Local Markdown sections are scored with transparent keyword-based retrieval and returned with citations.
+- The Evidence Gate evaluates hit count, top score, and distinctive-term coverage after retrieval.
+- Insufficient evidence overrides an initial `search` route and creates a Low Confidence HITL ticket.
+- High-risk commitments create a review ticket and a draft that must be reviewed before use.
+- Data-modification intent is blocked from production and converted into a tightly constrained SQL dry-run preview.
+- Out-of-scope requests perform no knowledge-base retrieval.
+- Streamlit session state keeps the conversation and the most recent audit log.
+- Mock mode is deterministic; Gemma-backed answer and draft generation is optional.
 
 ## System Architecture
 
 ```mermaid
-flowchart LR
-    U[User] --> UI[Streamlit UI]
-    UI --> R[Router]
-    R <--> L[LLM or mock fallback]
-    R --> S[RAG Search]
-    S --> KB[Markdown Knowledge Base]
-    S --> E[Evidence Gate]
-    E --> A[Read-only answer]
-    E --> H[HITL Gate]
-    R --> H
-    R --> D[Data Ops Sandbox]
-    R --> O[Out-of-scope Guardrail]
-    A --> G[Governance Trace]
-    H --> G
-    D --> G
-    O --> G
-    G --> M[Engineering Metrics]
+flowchart TD
+    classDef userNode   fill:#E8F4FD,stroke:#0E3A5B,color:#0E3A5B,font-weight:bold
+    classDef routeNode  fill:#EDF7ED,stroke:#2F7D4A,color:#1A5C35
+    classDef execNode   fill:#FFFBF0,stroke:#B68A3D,color:#7A5C25
+    classDef knowNode   fill:#EEF2FF,stroke:#4A6FA5,color:#2A3F6A
+    classDef govNode    fill:#FFF0F0,stroke:#A85F5F,color:#7A3535
+
+    U([User]):::userNode --> UI[Streamlit UI]:::userNode
+
+    subgraph ROUTE ["Routing & Guardrails"]
+        direction LR
+        IR[Intent Router]:::routeNode
+        OG[Out-of-scope Guardrail]:::routeNode
+    end
+
+    subgraph EXEC ["Execution Paths"]
+        direction LR
+        RAG[RAG + Evidence Gate]:::execNode
+        HITL[HITL Draft Gate]:::execNode
+        SBX[Data Ops Sandbox]:::execNode
+    end
+
+    subgraph KNOW ["Knowledge & Inference"]
+        direction LR
+        KB[(Markdown KB)]:::knowNode
+        LLM[LLM / Mock Fallback]:::knowNode
+    end
+
+    subgraph GOV ["Governance"]
+        direction LR
+        AL[Audit Log]:::govNode
+        MT[Engineering Metrics]:::govNode
+    end
+
+    UI --> IR
+    IR --> OG
+    IR --> RAG
+    IR --> HITL
+    IR --> SBX
+    RAG --> KB
+    RAG --> LLM
+    HITL --> LLM
+    RAG -- "low confidence" --> HITL
+    OG --> AL
+    RAG --> AL
+    HITL --> AL
+    SBX --> AL
+    AL --> MT
 ```
 
-## Data Flow
+The intent router is deterministic in the current implementation. The optional LLM is used for grounded answers, review drafts, and an opt-in evidence judge.
+
+## Governed Request Flow
 
 ```mermaid
 flowchart TD
-    Q[User query] --> RU[route_user_request]
-    RU --> RD{Route decision}
-    RD -->|search| RS[RAG search]
-    RD -->|generate_draft_and_escalate| HG[HITL gate]
-    RD -->|data_ops_dry_run| DS[Sandbox dry-run]
-    RD -->|out_of_scope| OS[No-retrieval response]
-    RS --> EG{Evidence Gate}
-    EG -->|sufficient| AN[Answer with citations]
-    EG -->|insufficient| HG
-    HG --> ES[Draft and escalation ticket]
-    DS --> DP[SQL validation and Before/After preview]
-    AN --> AL[Audit log]
-    ES --> AL
-    DP --> AL
-    OS --> AL
+    classDef input    fill:#E8F4FD,stroke:#0E3A5B,color:#0E3A5B
+    classDef gate     fill:#FFFBF0,stroke:#B68A3D,color:#7A5C25
+    classDef answer   fill:#EDF7ED,stroke:#2F7D4A,color:#1A5C35
+    classDef escalate fill:#FFF0F0,stroke:#A85F5F,color:#7A3535
+    classDef audit    fill:#F5F0FF,stroke:#7A5A9A,color:#4A2A7A
+
+    Q([User Query]):::input --> RU["route_user_request()"]:::input
+    RU --> RD{Route?}:::gate
+    RD -- "search"               --> RS[RAG Search]:::answer
+    RD -- "draft + escalate"     --> HG[HITL Gate]:::escalate
+    RD -- "data_ops_dry_run"     --> DS[Sandbox Dry-run]:::answer
+    RD -- "out_of_scope"         --> OS[Guardrail Response]:::escalate
+    RS --> EG{Evidence Gate}:::gate
+    EG -- "✓ sufficient"         --> AN[Cited Answer]:::answer
+    EG -- "✗ low confidence"     --> HG
+    HG --> ES[Draft + Escalation Ticket]:::escalate
+    DS --> DP[SQL Before / After Preview]:::answer
+    AN  --> AL[(Audit Log)]:::audit
+    ES  --> AL
+    DP  --> AL
+    OS  --> AL
 ```
 
-## Permission / Risk Flow
+## Routes And Guardrails
 
-```mermaid
-flowchart TD
-    Q[Request] --> C{Permission and risk classification}
-    C -->|Tier 0| T0[Read-only RAG answer]
-    C -->|Tier 1| T1[Draft generation and human review]
-    C -->|Tier 3| T3[High-risk system modification intent]
-    C -->|Out-of-scope| OOS[No retrieval]
-    T3 --> DR[Sandbox dry-run only]
-```
-
-## Core Routes
-
-| Route | Typical intent | Demo behavior |
+| Route | Permission / risk | Actual behavior |
 |---|---|---|
-| `search` | Certification scoping or SOP questions | Tier 0 RAG answer with citations, subject to the Evidence Gate |
-| `generate_draft_and_escalate` | Guarantees, pricing, external commitments, formal conclusions, or low confidence | Tier 1 safe draft and HITL ticket |
-| `data_ops_dry_run` | Internal system modification intent | Tier 3 intent is blocked from production and shown as a validated dry-run preview |
-| `out_of_scope` | Unrelated requests | Guardrail response with no knowledge-base retrieval |
+| `search` | `Tier 0` / `None` | Searches local Markdown, runs the Evidence Gate, then returns up to three cited points if evidence is sufficient. |
+| `generate_draft_and_escalate` | `Tier 1` / commitment, pricing, formal conclusion, or Low Confidence | Retrieves supporting material, creates a simulated `Pending Human Review` ticket, and displays a review draft. |
+| `data_ops_dry_run` | `Tier 3` intent / `System Modification` | Blocks production writes and displays a fixed fake-record SQL dry-run, validator status, Before/After tables, and a simulated approval queue. The preview action is labeled `current_action_tier=Tier 1`. |
+| `out_of_scope` | `N/A` / `Out of Scope` | Returns a guardrail response with `retrieval_required=false` and no retrieval. |
+
+The router checks system-modification terms first, followed by guarantees, commercial commitments, formal compliance conclusions, explicit out-of-scope terms, and general certification-domain signals. It does not use an LLM to choose a route.
 
 ## Evidence Gate
 
-Retrieved evidence is not automatically sufficient evidence. After a `search` route retrieves documents, the Evidence Gate evaluates signals such as hit count, top score, coverage, and missing terms. If the evidence does not adequately support the request, the workflow escalates to a low-confidence HITL path instead of presenting a confident answer. The deterministic gate remains the default; an optional LLM evidence judge is feature-flagged.
+Every initial `search` runs a deterministic Evidence Gate. Evidence is sufficient only when at least one result exists, the top score reaches `EVIDENCE_SCORE_FLOOR`, and distinctive-term coverage reaches `EVIDENCE_COVERAGE_THRESHOLD`.
+
+When evidence is insufficient, the gate overrides the route to `generate_draft_and_escalate`, sets `Tier 1` and `risk_type=Low Confidence`, creates a knowledge-gap draft, and records evidence fields in the audit log. The optional LLM judge can only make a deterministic pass stricter; it cannot turn a deterministic failure into a pass.
 
 ## Demo Scenarios
 
-1. Ask a supported Bluetooth certification scoping question to see a Tier 0 cited answer.
-2. Ask a niche question unsupported by the simulated knowledge base to trigger low-confidence escalation.
-3. Ask for a guaranteed certification outcome or formal quote to create a Tier 1 review ticket and safe draft.
-4. Ask to modify an internal case record to see a Tier 3 SQL dry-run and Before/After preview.
-5. Ask an unrelated question to confirm the out-of-scope route performs no retrieval.
+Use the Chinese inputs below because they are the app's built-in acceptance scenarios.
 
-More presenter guidance is available in [`DEMO_SCRIPT.md`](DEMO_SCRIPT.md).
+| # | 中文原始輸入 | Expected route / result | Expected UI |
+|---|---|---|---|
+| 1 | `客戶有一款藍牙耳機要出口到歐洲，初步 scoping 要看哪些指令？` | `search` / `Tier 0` / `action_status=answered` | Cited answer and `evidence_sufficient=true`. |
+| 2 | `可以保證這個產品一定會通過 FCC 嗎？` | `generate_draft_and_escalate` / `Tier 1` / `Guarantee/Commitment` | HITL Gate, review ticket, and 商務澄清信草稿. |
+| 3 | `請幫我直接修改內部系統，把審核狀態改成通過。` | `data_ops_dry_run` / `Tier 3` intent / dry-run only | Sandbox Gate, validated SQL, Before/After preview, and no production write. |
+| 4 | `請幫我推薦今天晚餐。` | `out_of_scope` / no retrieval | 零檢索 badge and `retrieved_docs=[]`. |
+| 5 | `這款耳機適用某個特殊衛星頻段的日本法規嗎？` | Initial `search`, then Evidence Gate override to `generate_draft_and_escalate` / `Tier 1` / `Low Confidence` | Evidence warning, knowledge-gap draft, and Low Confidence ticket. |
+| 6 | After scenario 1, ask `那如果是去美國呢？` | `conversation_state` carry-forward; `search` / `Tier 0` when evidence passes | The previous user query is prepended for retrieval and the intent summary states that the request continues the prior question. |
 
-## Setup and Run
+See [`docs/demo_guide.md`](docs/demo_guide.md) for a neutral runbook containing only inputs, expected routes, expected UI, and demonstration points.
 
-Requirements: Python 3.10 or newer.
+## UI And State
 
-```bash
+- **Sidebar:** system status, loaded knowledge files, six scenario buttons, and a clear-conversation button.
+- **對話工作台:** conversation history, status badges, HITL ticket panels, and sandbox previews.
+- **Audit Log:** Governance Trace, Engineering Metrics JSON, raw JSON view, and a download button for the latest log.
+- **知識庫文件:** the three local Markdown files and expandable raw-content previews.
+- **Session state:** stores the current conversation and only the latest audit log. Clearing the conversation resets both; there is no durable persistence.
+- **Conversation carry-forward:** follow-ups beginning with `那`, `如果`, `那如果`, `改成`, or `換成` reuse the immediately preceding user query for retrieval.
+
+## Setup And Run
+
+Python and `pip` are required. A `.env` file is optional in the default mock mode.
+
+```powershell
 python -m venv .venv
-# Windows PowerShell:
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 streamlit run app.py
 ```
 
-The app opens at `http://localhost:8501`. Windows users can also run `start_demo.bat`.
+The default Streamlit URL is `http://localhost:8501`. On Windows, `start_demo.bat` runs `streamlit run app.py` from the repository directory and opens that URL; it assumes `streamlit` is available on `PATH`.
 
 ## Environment Variables
 
-Copy `.env.example` to `.env` and keep `.env` local. Placeholder configuration:
+Copy `.env.example` to `.env` only when you need to change the defaults.
 
 ```dotenv
 LLM_MODE=mock
@@ -124,40 +169,39 @@ EVIDENCE_SCORE_FLOOR=3
 EVIDENCE_COVERAGE_THRESHOLD=0.5
 ```
 
-- `LLM_MODE=mock` runs the deterministic portfolio demo without an API key.
-- `LLM_MODE=gemma` uses the configured model and requires `GEMINI_API_KEY`.
-- `LLM_MODE=auto` attempts the configured model and falls back to deterministic behavior.
-- Never commit `.env` or `.streamlit/secrets.toml`.
+| Variable | Implementation behavior |
+|---|---|
+| `LLM_MODE=mock` | Uses deterministic cited answers and deterministic review templates; no API key is required. |
+| `LLM_MODE=gemma` | Calls the configured model. A grounded-answer failure is shown as an error; a HITL draft failure falls back to the deterministic template. |
+| `LLM_MODE=auto` | Calls the configured model and falls back to deterministic behavior when generation fails. |
+| `GEMINI_API_KEY` | Required for model calls and for the optional LLM evidence judge. |
+| `GEMMA_MODEL` | Model name passed to `google-genai`. |
+| `USE_LLM_EVIDENCE_JUDGE` | Enables the judge only when true, the mode is `gemma` or `auto`, and an API key exists. |
+| `EVIDENCE_SCORE_FLOOR` | Non-negative integer top-score threshold; invalid values fall back to the code default. |
+| `EVIDENCE_COVERAGE_THRESHOLD` | Coverage threshold clamped to `0.0`-`1.0`; invalid values fall back to the code default. |
+
+Keep `.env` and `.streamlit/secrets.toml` local.
 
 ## Repository Structure
 
 ```text
 .
-|-- app.py                 # Streamlit UI, routing, gates, sandbox, and logs
-|-- data/docs/             # Simulated Markdown knowledge base
-|-- DEMO_SCRIPT.md         # Presenter scenarios and talking points
-|-- DEMO_SPEC.md           # Earlier prototype specification
-|-- DEMO_SPEC_v2.1.md      # Current detailed demo specification
+|-- app.py
+|-- data/docs/
+|-- DEMO_SPEC_v2.1.md
+|-- docs/demo_guide.md
 |-- requirements.txt
 |-- .env.example
 `-- start_demo.bat
 ```
 
-## Limitations / Intentionally Not Implemented
+## Known Limitations
 
-- No production database connection or write path
-- No external email, messaging, ticketing, or approval-system integration
-- No formal compliance, legal, pricing, or certification conclusions
-- Small simulated Markdown knowledge base
-- Simplified retrieval scoring and demo-calibrated evidence thresholds
-- Fake sandbox records and previews only
-- No production authentication, authorization, or tenant isolation
-
-## Suggested Production Extensions
-
-- Add identity-aware access control and document-level permissions
-- Use a production retrieval layer with evaluation datasets and calibrated thresholds
-- Integrate durable HITL approval queues and ticketing systems
-- Add policy versioning, immutable audit storage, monitoring, and alerts
-- Introduce secure, separately authorized execution services after approval
-- Add automated red-team, regression, and evidence-quality evaluations
+- Routing is deterministic keyword matching, not semantic or model-based intent classification.
+- Retrieval is local keyword scoring over Markdown sections, not vector or hybrid search.
+- The knowledge base contains only three simulated documents.
+- HITL tickets, approval queues, messages, and audit logs are simulated and not persisted.
+- Only the most recent audit log is retained in Streamlit session state.
+- The sandbox validator accepts only one fixed update to fake record `DEMO-001`; it never executes SQL.
+- Conversation carry-forward uses only the immediately preceding user query and a small set of follow-up prefixes.
+- There is no production authentication, authorization, tenant isolation, monitoring, or external-system integration.
