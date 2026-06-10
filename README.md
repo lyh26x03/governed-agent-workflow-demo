@@ -65,6 +65,8 @@ streamlit run app.py
 
 啟動後通常可從 `http://localhost:8501` 開啟 Demo。
 
+Windows 使用者也可雙擊 `start_gintec.bat`，它會啟動 Streamlit 並開啟瀏覽器。
+
 ## `.env` 設定
 
 ```dotenv
@@ -81,9 +83,12 @@ EVIDENCE_SCORE_FLOOR=3
 EVIDENCE_COVERAGE_THRESHOLD=0.5
 ```
 
-- `mock`：使用 deterministic 回覆，最適合穩定展示。
-- `gemma`：嘗試使用設定的 Gemma 模型。
-- `auto`：嘗試使用 Gemma，失敗時依既有 fallback 流程處理。
+### Demo Mode 用途
+
+- `mock`：完全使用 deterministic 回覆，不需要 API key。適合離線展示、固定流程驗證，以及需要穩定重現結果的 Demo。
+- `gemma`：使用 `GEMINI_API_KEY` 與 `GEMMA_MODEL` 呼叫 Gemma。適合展示模型生成效果；呼叫失敗時會保留錯誤資訊，不自動切換成 mock 回覆。
+- `auto`：優先呼叫 Gemma，呼叫失敗時依既有 fallback 流程改用 deterministic 回覆。適合網路或 API 可用性不確定、但仍需確保 Demo 可繼續進行的場合。
+- 模式由啟動環境的 `LLM_MODE` 決定；UI 的 System Status 僅顯示目前狀態，不提供模式切換。
 - `USE_LLM_EVIDENCE_JUDGE=false`：即使 `LLM_MODE=gemma`，Evidence Gate 也不會呼叫 LLM judge。
 - Evidence judge 只有在 feature flag 開啟、模式為 `gemma` 或 `auto`，且有 API key 時才可能呼叫。
 

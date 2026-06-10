@@ -1959,6 +1959,21 @@ def render_log_panel(last_log: dict[str, Any]) -> None:
         st.json(last_log)
 
 
+def render_system_status() -> None:
+    llm_config = load_llm_config()
+    evidence_config = load_evidence_config()
+    last_log = st.session_state.get("last_log", {})
+    llm_mode = llm_config["llm_mode"]
+    model = "mock" if llm_mode == "mock" else llm_config["gemma_model"]
+    fallback_used = last_log.get("fallback_used", "N/A")
+
+    render_eyebrow("System Status")
+    st.text(f"llm_mode: {llm_mode}")
+    st.text(f"model: {model}")
+    st.text(f"evidence_judge: {'enabled' if evidence_config['use_llm_judge'] else 'disabled'}")
+    st.text(f"fallback_used: {fallback_used}")
+
+
 def render_sidebar(documents: list[dict[str, Any]], load_error: str | None) -> None:
     with st.sidebar:
         st.markdown(
@@ -1981,6 +1996,9 @@ def render_sidebar(documents: list[dict[str, Any]], load_error: str | None) -> N
                 f'<div class="gc-info-card__v">{html_escape(value)}</div></div>',
                 unsafe_allow_html=True,
             )
+
+        st.divider()
+        render_system_status()
 
         st.divider()
         render_eyebrow("Knowledge Base")
