@@ -13,6 +13,12 @@ from typing import Any, Literal
 import streamlit as st
 from pydantic import BaseModel, Field
 
+from product_context_memory import (
+    CONTINUATION_SEARCH_ROUTES,
+    RECALL_ROUTE,
+    ProductConversationMemory,
+)
+
 
 PROJECT_NAME = "Certification Workflow Agent"
 DEMO_CAPTION = "Prototype demo for an enterprise certification workflow: RAG, HITL, Data Ops Sandbox, Evidence Gate, Governance Trace, and Audit Log."
@@ -461,6 +467,8 @@ MOCK_LOG = {
     "evidence_missing_terms": None,
     "evidence_reason": None,
     "evidence_judge_used": None,
+    "memory_route": None,
+    "product_memory": None,
 }
 
 COMMON_KEYWORDS = [
@@ -579,6 +587,17 @@ def initialize_state() -> None:
         st.session_state.messages = []
     if "last_log" not in st.session_state:
         st.session_state.last_log = MOCK_LOG.copy()
+    if "product_memory" not in st.session_state:
+        st.session_state.product_memory = ProductConversationMemory()
+
+
+def get_product_memory() -> ProductConversationMemory:
+    """取得（必要時建立）本 session 的多輪產品脈絡記憶。"""
+    memory = st.session_state.get("product_memory")
+    if not isinstance(memory, ProductConversationMemory):
+        memory = ProductConversationMemory()
+        st.session_state.product_memory = memory
+    return memory
 
 
 def inject_custom_css() -> None:
@@ -686,6 +705,8 @@ def build_status_badge(
     action_status: str,
     risk_type: str,
 ) -> tuple[str, Literal["success", "warning", "danger", "neutral"]]:
+    if action_status == "history_recall":
+        return "引用回憶", "neutral"
     if route_status == "search" and action_status == "answered":
         return "已引用來源", "success"
     if risk_type == "Low Confidence" and action_status == "low_confidence_escalated":
@@ -1225,6 +1246,60 @@ def build_low_confidence_route(
     )
 
 
+def _memory_focus(memory: ProductConversationMemory) -> str:
+    snapshot = memory.snapshot()
+    return " / ".join(
+        str(value) for value in (snapshot["primary_product"], snapshot["primary_region"]) if value
+    )
+
+
+def build_memory_continuation_route(
+    memory_route: str,
+    rationale: str,
+    memory: ProductConversationMemory,
+) -> RouteDecision:
+    """把被關鍵字路由誤判為 out_of_scope、但記憶顯示為延續任務的 follow-up，救回受控檢索。"""
+    focus = _memory_focus(memory) or "既有產品任務"
+    return RouteDecision(
+        route_status="search",
+        intent_summary=f"多輪記憶搶救：延續「{focus}」的 {memory_route}",
+        selected_tool="search_knowledge_base_skill",
+        permission_tier="Tier 0",
+        risk_type="None",
+        risk_reason=f"關鍵字路由判為離題，但結構化記憶顯示為延續既有任務的 follow-up，改走受控檢索。（{rationale}）",
+        retrieval_required=True,
+        approval_required=False,
+        confidence=0.7,
+    )
+
+
+def build_memory_recall_route(rationale: str) -> RouteDecision:
+    """citation recall：直接由記憶回放先前引用文件，不重新檢索知識庫。"""
+    return RouteDecision(
+        route_status="search",
+        intent_summary="多輪記憶 citation recall：回放最近引用 / 檢索過的文件",
+        selected_tool="memory_citation_recall",
+        permission_tier="Tier 0",
+        risk_type="None",
+        risk_reason=f"使用者詢問先前引用文件，直接由對話記憶回放，不重新檢索。（{rationale}）",
+        retrieval_required=False,
+        approval_required=False,
+        confidence=0.9,
+    )
+
+
+def build_citation_recall_answer(memory: ProductConversationMemory) -> str:
+    docs = memory.last_retrieved_docs
+    if not docs:
+        return "目前對話中尚未實際引用任何知識庫文件。"
+    lines = ["根據對話記憶，先前實際檢索 / 引用過的文件如下："]
+    lines.extend(f"- {doc}" for doc in docs)
+    focus = _memory_focus(memory)
+    if focus:
+        lines.append(f"（目前任務焦點：{focus}）")
+    return "\n".join(lines)
+
+
 def load_llm_config() -> dict[str, str]:
     try:
         from dotenv import load_dotenv
@@ -1760,16 +1835,51 @@ def add_user_message(content: str, documents: list[dict[str, Any]]) -> None:
     started_at = time.perf_counter()
     conversation_state = get_conversation_state()
     route_decision = route_user_request(content, conversation_state)
+    product_memory = get_product_memory()
     results: list[dict[str, Any]] = []
     ticket: HumanReviewTicket | None = None
     sandbox_result: DataOpsSandboxResult | None = None
     evidence: EvidenceAssessment | None = None
 
-    if route_decision.route_status == "search":
+    # === 多輪記憶搶救層 ===
+    # 關鍵字路由對「那日本呢？」「剛才參考哪些文件」這類無領域關鍵字的短 follow-up 會誤判為
+    # out_of_scope。若記憶顯示這是延續既有產品任務的 follow-up，就救回受控檢索；若是引用回憶，
+    # 就直接由記憶回放，避免長對話脈絡崩壞。真正的閒聊（無 active task）仍維持零檢索。
+    memory_route, memory_rationale = product_memory.classify(content)
+    citation_recall = (
+        memory_route == RECALL_ROUTE and bool(product_memory.last_retrieved_docs)
+    )
+    if (
+        not citation_recall
+        and route_decision.route_status == "out_of_scope"
+        and product_memory.has_active_task
+        and memory_route in CONTINUATION_SEARCH_ROUTES
+    ):
+        route_decision = build_memory_continuation_route(
+            memory_route, memory_rationale, product_memory
+        )
+
+    if citation_recall:
+        # 由記憶直接回放先前引用文件，不重新檢索知識庫。
+        route_decision = build_memory_recall_route(memory_rationale)
+        answer_result = {
+            "answer": build_citation_recall_answer(product_memory),
+            "llm_mode": load_llm_config()["llm_mode"],
+            "model": "deterministic-memory-recall",
+            "fallback_used": False,
+            "error": None,
+        }
+        action_status = "history_recall"
+    elif route_decision.route_status == "search":
+        # --- Baseline carry-forward（保留為 regression 契約：只看上一句）---
         search_query = content
         previous_user_query = conversation_state.get("previous_user_query", "")
         if previous_user_query and route_decision.intent_summary.startswith("延續前一題"):
             search_query = f"{previous_user_query} {content}"
+        # --- 升級：用結構化多輪記憶組裝 retrieval query ---
+        # 把 active product / region / spec 與任務核心關鍵詞融進查詢，修正短 follow-up
+        # （例如「那日本呢？」）丟失第一輪產品與認證脈絡的問題。
+        search_query = product_memory.compose_retrieval_query(content)
         results = search_knowledge_base(search_query, documents)
 
         # === 情境五 Self-Correction Loop ===
@@ -1841,6 +1951,14 @@ def add_user_message(content: str, documents: list[dict[str, Any]]) -> None:
         }
         action_status = action_statuses[route_decision.route_status]
 
+    # === 多輪記憶更新 ===
+    # 用本輪實際檢索 / 引用到的文件名更新結構化記憶，供下一輪 compose_retrieval_query
+    # 與「剛才參考哪些文件」的 citation recall 使用。
+    memory_snapshot = product_memory.update_from_turn(
+        content,
+        retrieved_docs=[result["filename"] for result in results],
+    )
+
     latency_ms = round((time.perf_counter() - started_at) * 1000)
 
     st.session_state.messages.append({"role": "user", "content": content})
@@ -1856,7 +1974,7 @@ def add_user_message(content: str, documents: list[dict[str, Any]]) -> None:
     if sandbox_result:
         assistant_message["sandbox_result"] = sandbox_result.model_dump()
     st.session_state.messages.append(assistant_message)
-    st.session_state.last_log = build_route_log(
+    log = build_route_log(
         route_decision,
         results,
         answer_result,
@@ -1866,6 +1984,10 @@ def add_user_message(content: str, documents: list[dict[str, Any]]) -> None:
         sandbox_result,
         evidence,
     )
+    # 將多輪記憶的決策與狀態納入 Governance Trace（可觀測、可稽核）。
+    log["memory_route"] = memory_snapshot.get("route")
+    log["product_memory"] = memory_snapshot
+    st.session_state.last_log = log
 
 
 def render_log_panel(last_log: dict[str, Any]) -> None:
@@ -1939,6 +2061,26 @@ def render_log_panel(last_log: dict[str, Any]) -> None:
                   field("sandbox_id", last_log.get("sandbox_id")) + "&nbsp;&nbsp;"
                   + field("sql_validation_status", last_log.get("sql_validation_status")))
         )
+
+    memory_state = last_log.get("product_memory")
+    if isinstance(memory_state, dict):
+        active_focus = " / ".join(
+            str(item) for item in (
+                memory_state.get("primary_product"),
+                memory_state.get("primary_region"),
+            ) if item
+        ) or "—"
+        lines.append(
+            cline("MEMORY", "plan",
+                  field("memory_route", last_log.get("memory_route")) + "&nbsp;&nbsp;"
+                  + field("active_focus", active_focus) + "&nbsp;&nbsp;"
+                  + field("docs_in_memory", len(memory_state.get("last_retrieved_docs", []))))
+        )
+        if memory_state.get("active_context_deltas"):
+            lines.append(
+                cline("MEMORY", "plan",
+                      field("context_deltas", " → ".join(memory_state["active_context_deltas"])))
+            )
 
     st.markdown(
         f'<div class="gc-console"><div class="gc-console__pills">{pills}</div>{"".join(lines)}</div>',
@@ -2025,6 +2167,7 @@ def render_sidebar(documents: list[dict[str, Any]], load_error: str | None) -> N
         if st.button("清除對話", key="clear_conversation", use_container_width=True):
             st.session_state.messages = []
             st.session_state.last_log = MOCK_LOG.copy()
+            st.session_state.product_memory = ProductConversationMemory()
             st.rerun()
 
 

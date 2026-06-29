@@ -28,7 +28,6 @@ class CurrentCarryForwardRegressionTests(unittest.TestCase):
         # Keep turn_1 referenced so the test makes the dropped context obvious.
         self.assertIn("certification scoping", turn_1)
 
-    @unittest.expectedFailure
     def test_future_turn3_composed_query_preserves_product_and_certification_context(self) -> None:
         from product_context_memory import ProductConversationMemory
 
