@@ -2,7 +2,7 @@
 
 > Streamlit prototype for a governed enterprise AI workflow with local RAG, HITL escalation, a data-operations sandbox, permission tiers, an Evidence Gate, and an audit view.
 
-This demo supports an electronic-product certification workflow while keeping every request inside explicit evidence, permission, and risk boundaries. Its behavior is defined by [`app.py`](app.py); [`DEMO_SPEC_v2.1.md`](DEMO_SPEC_v2.1.md) is the only active demo specification.
+This demo supports an electronic-product certification workflow while keeping every request inside explicit evidence, permission, and risk boundaries. The runtime source of truth is [`app.py`](app.py); [`DEMO_SPEC_v2.1.md`](DEMO_SPEC_v2.1.md) and [`docs/demo_guide.md`](docs/demo_guide.md) document the original v2.1 demo scenarios.
 
 ## Disclaimer
 
@@ -11,6 +11,7 @@ This repository is a prototype using simulated Markdown documents, records, tick
 ## Implemented Behavior
 
 - A deterministic rule-based intent router selects one of four routes.
+- All local Markdown files directly under `data/docs/` are loaded as the simulated knowledge base.
 - Local Markdown sections are scored with transparent keyword-based retrieval and returned with citations.
 - The Evidence Gate evaluates hit count, top score, and distinctive-term coverage after retrieval.
 - Insufficient evidence overrides an initial `search` route and creates a Low Confidence HITL ticket.
@@ -19,6 +20,18 @@ This repository is a prototype using simulated Markdown documents, records, tick
 - Out-of-scope requests perform no knowledge-base retrieval.
 - Streamlit session state keeps the conversation and the most recent audit log.
 - Mock mode is deterministic; Gemma-backed answer and draft generation is optional.
+
+## Current Project Fit
+
+The README mostly matches the current Streamlit prototype, but the repository has grown beyond the original three-document demo. The current code and corpus now show:
+
+- A governed AI workflow dashboard for electronics certification/scoping, not a production certification system.
+- A deterministic router for `search`, `generate_draft_and_escalate`, `data_ops_dry_run`, and `out_of_scope`.
+- A local keyword-scored RAG path with citations and a fail-safe Evidence Gate.
+- Simulated HITL tickets and review drafts for guarantees, commercial commitments, formal conclusions, and Low Confidence retrieval.
+- A simulated Data Ops Sandbox that only previews one constrained SQL update for fake record `DEMO-001`.
+- A larger simulated corpus with product, region, SOP, FAQ, and policy files.
+- Test plans for a future product-context memory layer. That memory layer is not implemented yet; current carry-forward only prepends the immediately previous user query when the follow-up prefix is recognized.
 
 ## System Architecture
 
@@ -119,6 +132,18 @@ Every initial `search` runs a deterministic Evidence Gate. Evidence is sufficien
 
 When evidence is insufficient, the gate overrides the route to `generate_draft_and_escalate`, sets `Tier 1` and `risk_type=Low Confidence`, creates a knowledge-gap draft, and records evidence fields in the audit log. The optional LLM judge can only make a deterministic pass stricter; it cannot turn a deterministic failure into a pass.
 
+## Knowledge Corpus
+
+The app loads every `*.md` file directly under [`data/docs/`](data/docs/). The current corpus contains 11 simulated internal documents:
+
+| Group | Files | Purpose |
+|---|---|---|
+| Original workflow corpus | `SOP_藍牙產品歐美認證初步Scoping_v2.md`, `Policy_AI內部使用與對外回覆邊界原則.md`, `FAQ_高風險轉人工處理指南.md` | Supports the six built-in governance demo scenarios. |
+| Product-specific corpus | `產品A_AlphaBuds_X1_規格與認證.md`, `產品B_BetaBuds_X2_規格與認證.md`, `產品C_GammaHub_C1_規格與認證.md`, `產品D_DeltaCam_D4_規格與認證.md` | Provides simulated product differences for future multi-turn product-context demos. |
+| Shared product/certification corpus | `區域認證矩陣_EU_US_JP.md`, `無線測試與認證Scoping_SOP.md`, `產品認證風險邊界Policy.md`, `FAQ_產品認證與多輪問答.md` | Covers regional scoping, radio-test boundaries, no-guarantee policy, and multi-turn example prompts. |
+
+All corpus files are simulated demo material. They are not real product specifications, legal advice, regulatory opinions, test reports, certificates, or pass/fail evidence.
+
 ## Demo Scenarios
 
 Use the Chinese inputs below because they are the app's built-in acceptance scenarios.
@@ -139,9 +164,20 @@ See [`docs/demo_guide.md`](docs/demo_guide.md) for a neutral runbook containing 
 - **Sidebar:** system status, loaded knowledge files, six scenario buttons, and a clear-conversation button.
 - **對話工作台:** conversation history, status badges, HITL ticket panels, and sandbox previews.
 - **Audit Log:** Governance Trace, Engineering Metrics JSON, raw JSON view, and a download button for the latest log.
-- **知識庫文件:** the three local Markdown files and expandable raw-content previews.
+- **知識庫文件:** all loaded local Markdown files and expandable raw-content previews.
 - **Session state:** stores the current conversation and only the latest audit log. Clearing the conversation resets both; there is no durable persistence.
 - **Conversation carry-forward:** follow-ups beginning with `那`, `如果`, `那如果`, `改成`, or `換成` reuse the immediately preceding user query for retrieval.
+
+## Tests And Roadmap Notes
+
+```powershell
+python -m unittest discover -s tests
+```
+
+- `tests/test_corpus_integrity.py` verifies the simulated product/certification corpus and its disclaimer boundaries.
+- `tests/test_current_carry_forward_regression.py` documents the current limitation: follow-up retrieval composition uses only the immediately previous user query.
+- `tests/test_product_context_memory_contract.py` defines expected behavior for a future `ProductConversationMemory` implementation and is intentionally marked with `expectedFailure` until that layer exists.
+- [`docs/product_context_memory_demo_plan.md`](docs/product_context_memory_demo_plan.md) describes the intended future multi-turn product-context story.
 
 ## Setup And Run
 
@@ -190,18 +226,30 @@ Keep `.env` and `.streamlit/secrets.toml` local.
 |-- data/docs/
 |-- DEMO_SPEC_v2.1.md
 |-- docs/demo_guide.md
+|-- docs/product_context_memory_demo_plan.md
 |-- requirements.txt
+|-- tests/
 |-- .env.example
 `-- start_demo.bat
 ```
+
+## Resume-Aligned Project Summary
+
+Use this project as a governed enterprise AI workflow demo, not as a production compliance engine. A precise resume description is:
+
+> Built a Streamlit prototype for an electronics-certification AI workflow with deterministic routing, local Markdown RAG, citation grounding, an Evidence Gate, simulated HITL escalation, a Data Ops SQL dry-run sandbox, and an audit-log panel. The system blocks production writes and high-risk guarantees, escalates low-confidence retrieval to human review, and keeps all outputs within explicit evidence and permission boundaries.
+
+If space is limited, use this shorter version:
+
+> Streamlit governed AI workflow demo for electronics certification: deterministic router, evidence-gated local RAG, HITL escalation, SQL dry-run sandbox, and audit logging with simulated Markdown corpus.
 
 ## Known Limitations
 
 - Routing is deterministic keyword matching, not semantic or model-based intent classification.
 - Retrieval is local keyword scoring over Markdown sections, not vector or hybrid search.
-- The knowledge base contains only three simulated documents.
+- The knowledge base contains simulated documents only; it does not represent real compliance evidence.
 - HITL tickets, approval queues, messages, and audit logs are simulated and not persisted.
 - Only the most recent audit log is retained in Streamlit session state.
 - The sandbox validator accepts only one fixed update to fake record `DEMO-001`; it never executes SQL.
-- Conversation carry-forward uses only the immediately preceding user query and a small set of follow-up prefixes.
+- Conversation carry-forward uses only the immediately preceding user query and a small set of follow-up prefixes; full product-context memory is planned but not implemented.
 - There is no production authentication, authorization, tenant isolation, monitoring, or external-system integration.

@@ -2031,7 +2031,7 @@ def render_sidebar(documents: list[dict[str, Any]], load_error: str | None) -> N
 def render_document_preview(documents: list[dict[str, Any]], load_error: str | None) -> None:
     render_eyebrow("Knowledge Assets")
     st.markdown('<div class="gc-section-title">知識庫文件</div>', unsafe_allow_html=True)
-    st.caption("三份本地 Markdown 文件，供 RAG、Evidence Gate 與人工審查草稿引用。")
+    st.caption("本地 Markdown 文件，供 RAG、Evidence Gate 與人工審查草稿引用。")
 
     if load_error:
         st.error(load_error)

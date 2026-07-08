@@ -64,7 +64,7 @@ Run scenario 1 first, then enter `那如果是去美國呢？`
 
 ## UI Checks
 
-- Sidebar shows system status, three loaded knowledge documents, six scenario buttons, and `清除對話`.
+- Sidebar shows system status, loaded knowledge documents, six scenario buttons, and `清除對話`.
 - `對話工作台` shows messages, route badges, HITL tickets, and sandbox previews.
 - `Audit Log` shows Governance Trace, Engineering Metrics JSON, raw JSON, and the latest-log download.
 - `知識庫文件` shows local Markdown assets and expandable raw content.
