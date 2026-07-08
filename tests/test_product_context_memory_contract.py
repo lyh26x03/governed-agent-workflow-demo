@@ -94,7 +94,6 @@ class ProductConversationMemorySchemaTests(
     ProductConversationMemoryContractMixin,
     unittest.TestCase,
 ):
-    @unittest.expectedFailure
     def test_expected_schema_fields_exist(self) -> None:
         memory = self.new_memory()
         state = self.snapshot(memory)
@@ -109,7 +108,6 @@ class ProductConversationMemorySchemaTests(
         }
         self.assertTrue(expected_fields.issubset(state.keys()))
 
-    @unittest.expectedFailure
     def test_first_substantive_product_query_seeds_active_request_summary(self) -> None:
         memory = self.new_memory()
         state = self.update_turn(
@@ -127,7 +125,6 @@ class ProductConversationMemorySchemaTests(
         self.assertTrue(_contains(state["active_request_summary"], "certification") or _contains(state["active_request_summary"], "scoping") or _contains(state["active_request_summary"], "認證"))
         self.assertTrue(_contains(state["last_retrieved_docs"], "產品A_AlphaBuds_X1_規格與認證.md"))
 
-    @unittest.expectedFailure
     def test_product_followup_preserves_task_and_adds_product_delta(self) -> None:
         memory = self.new_memory()
         self.update_turn(memory, TURN_1)
@@ -140,7 +137,6 @@ class ProductConversationMemorySchemaTests(
         self.assertIn("BetaBuds X2", composed_query)
         self.assertRegex(composed_query.lower(), r"certification|scoping|認證")
 
-    @unittest.expectedFailure
     def test_region_followup_preserves_active_product_and_adds_japan_delta(self) -> None:
         memory = self.new_memory()
         self.update_turn(memory, TURN_1)
@@ -155,7 +151,6 @@ class ProductConversationMemorySchemaTests(
         self.assertIn("Japan", composed_query)
         self.assertRegex(composed_query.lower(), r"certification|scoping|認證")
 
-    @unittest.expectedFailure
     def test_citation_recall_uses_last_retrieved_docs_without_new_product_task(self) -> None:
         memory = self.new_memory()
         self.update_turn(
@@ -174,7 +169,6 @@ class ProductConversationMemorySchemaTests(
         self.assertEqual(before["last_retrieved_docs"], state["last_retrieved_docs"])
         self.assertEqual(before["active_request_summary"], state["active_request_summary"])
 
-    @unittest.expectedFailure
     def test_guarantee_query_triggers_refusal_or_escalation_boundary(self) -> None:
         memory = self.new_memory()
         self.update_turn(memory, TURN_1)
@@ -185,7 +179,6 @@ class ProductConversationMemorySchemaTests(
         self.assertTrue(_contains(state, "Guarantee") or _contains(state, "保證") or _contains(state, "不得"))
         self.assertFalse(_contains(state, "一定通過"))
 
-    @unittest.expectedFailure
     def test_new_unrelated_product_task_replaces_or_resets_active_summary(self) -> None:
         memory = self.new_memory()
         self.update_turn(memory, TURN_1)
@@ -196,7 +189,6 @@ class ProductConversationMemorySchemaTests(
         self.assertFalse(_contains(state["active_request_summary"], "AlphaBuds X1"))
         self.assertTrue(_contains(state["active_spec_fields"], "no wireless") or _contains(state["active_spec_fields"], "無線功能") or _contains(state["active_spec_fields"], "no radio"))
 
-    @unittest.expectedFailure
     def test_memory_is_bounded_and_deduplicates_products_regions_and_docs(self) -> None:
         memory = self.new_memory(max_recent_turns=3, max_context_deltas=4, max_retrieved_docs=3)
         turns = [TURN_1, TURN_2, TURN_3, TURN_3, TURN_4, TURN_5, TURN_6, TURN_7]
@@ -223,7 +215,6 @@ class ProductContextMemoryAcceptanceScenarioTests(
     ProductConversationMemoryContractMixin,
     unittest.TestCase,
 ):
-    @unittest.expectedFailure
     def test_full_seven_turn_demo_scenario(self) -> None:
         memory = self.new_memory(max_recent_turns=6, max_context_deltas=8, max_retrieved_docs=8)
 
