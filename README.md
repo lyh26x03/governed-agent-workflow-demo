@@ -21,17 +21,23 @@ This repository is a prototype using simulated Markdown documents, records, tick
 - Streamlit session state keeps the conversation and the most recent audit log.
 - Mock mode is deterministic; Gemma-backed answer and draft generation is optional.
 
-## Current Project Fit
+## Current Scope
 
-The README mostly matches the current Streamlit prototype, but the repository has grown beyond the original three-document demo. The current code and corpus now show:
+This repository is a governed enterprise AI workflow prototype for electronics certification/scoping. The current implementation demonstrates:
 
-- A governed AI workflow dashboard for electronics certification/scoping, not a production certification system.
-- A deterministic router for `search`, `generate_draft_and_escalate`, `data_ops_dry_run`, and `out_of_scope`.
-- A local keyword-scored RAG path with citations and a fail-safe Evidence Gate.
-- Simulated HITL tickets and review drafts for guarantees, commercial commitments, formal conclusions, and Low Confidence retrieval.
-- A simulated Data Ops Sandbox that only previews one constrained SQL update for fake record `DEMO-001`.
-- A larger simulated corpus with product, region, SOP, FAQ, and policy files.
-- Test plans for a future product-context memory layer. That memory layer is not implemented yet; current carry-forward only prepends the immediately previous user query when the follow-up prefix is recognized.
+* A Streamlit dashboard for simulated electronics-certification workflows.
+* A deterministic rule-based router for `search`, `generate_draft_and_escalate`, `data_ops_dry_run`, and `out_of_scope`.
+* Local Markdown RAG with citations and an Evidence Gate that can escalate low-confidence retrieval to human review.
+* Simulated HITL tickets and review drafts for guarantees, commercial commitments, formal conclusions, and insufficient evidence.
+* A Data Ops Sandbox that only previews one constrained SQL dry-run against a fake record and never writes to production.
+* Governance Trace, Engineering Metrics, and an audit-log panel for reviewing route, risk, evidence, and action status.
+* A simulated product/certification corpus covering product specs, regional requirements, SOP, FAQ, and risk policy.
+
+## Planned / Not Yet Implemented
+
+The repository includes a future product-context memory plan and expected-failure contract tests. Full product-context memory is not implemented yet. The current app only supports limited conversation carry-forward: when a recognized follow-up prefix is detected, it prepends the immediately previous user query before retrieval.
+
+This means the current demo can show a simple follow-up scenario, but it does not yet preserve a bounded structured memory of active product, region, specification fields, cited documents, or multi-turn task state.
 
 ## System Architecture
 
