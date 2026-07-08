@@ -20,6 +20,7 @@ This repository is a prototype using simulated Markdown documents, records, tick
 - Out-of-scope requests perform no knowledge-base retrieval.
 - Streamlit session state keeps the conversation and the most recent audit log.
 - Mock mode is deterministic; Gemma-backed answer and draft generation is optional.
+- `ProductConversationMemory` adds deterministic, bounded multi-turn product context, citation recall, follow-up rescue, and memory state in the audit log.
 
 ## Current Scope
 
@@ -32,12 +33,22 @@ This repository is a governed enterprise AI workflow prototype for electronics c
 * A Data Ops Sandbox that only previews one constrained SQL dry-run against a fake record and never writes to production.
 * Governance Trace, Engineering Metrics, and an audit-log panel for reviewing route, risk, evidence, and action status.
 * A simulated product/certification corpus covering product specs, regional requirements, SOP, FAQ, and risk policy.
+* A deterministic product-context memory layer that tracks active product, region, specification fields, cited documents, and recent turns across bounded multi-turn workflows.
 
-## Planned / Not Yet Implemented
+## Product Context Memory
 
-The repository includes a future product-context memory plan and expected-failure contract tests. Full product-context memory is not implemented yet. The current app only supports limited conversation carry-forward: when a recognized follow-up prefix is detected, it prepends the immediately previous user query before retrieval.
+The repository includes an implemented `ProductConversationMemory` layer in [`product_context_memory.py`](product_context_memory.py). It is wired into [`app.py`](app.py) as an augmentation layer around the existing governance router, not a replacement for the router or guardrails.
 
-This means the current demo can show a simple follow-up scenario, but it does not yet preserve a bounded structured memory of active product, region, specification fields, cited documents, or multi-turn task state.
+The memory layer provides:
+
+* Bounded structured state for `active_products`, `active_regions`, `active_spec_fields`, `active_request_summary`, `active_context_deltas`, `last_retrieved_docs`, and `recent_turns`.
+* Context-rich retrieval query composition for short follow-ups such as `那日本呢？`.
+* Follow-up rescue when the keyword router would otherwise treat a short continuation as `out_of_scope`.
+* Citation recall for questions such as `剛才你參考了哪些文件？`.
+* Governance-safe handling of guarantees and spec conflicts, including escalation without adopting false claims into future retrieval context.
+* `memory_route` and `product_memory` fields in the audit log for observability.
+
+The implementation is deterministic and standard-library only. It is still a demo memory layer, not real compliance reasoning, persistent user memory, or learned personalization.
 
 ## System Architecture
 
@@ -161,7 +172,7 @@ Use the Chinese inputs below because they are the app's built-in acceptance scen
 | 3 | `請幫我直接修改內部系統，把審核狀態改成通過。` | `data_ops_dry_run` / `Tier 3` intent / dry-run only | Sandbox Gate, validated SQL, Before/After preview, and no production write. |
 | 4 | `請幫我推薦今天晚餐。` | `out_of_scope` / no retrieval | 零檢索 badge and `retrieved_docs=[]`. |
 | 5 | `這款耳機適用某個特殊衛星頻段的日本法規嗎？` | Initial `search`, then Evidence Gate override to `generate_draft_and_escalate` / `Tier 1` / `Low Confidence` | Evidence warning, knowledge-gap draft, and Low Confidence ticket. |
-| 6 | After scenario 1, ask `那如果是去美國呢？` | `conversation_state` carry-forward; `search` / `Tier 0` when evidence passes | The previous user query is prepended for retrieval and the intent summary states that the request continues the prior question. |
+| 6 | After scenario 1, ask `那如果是去美國呢？` | Product memory carry-forward; `search` / `Tier 0` when evidence passes | The active certification/scoping context is composed into retrieval and surfaced in the audit log. |
 
 See [`docs/demo_guide.md`](docs/demo_guide.md) for a neutral runbook containing only inputs, expected routes, expected UI, and demonstration points.
 
@@ -171,19 +182,24 @@ See [`docs/demo_guide.md`](docs/demo_guide.md) for a neutral runbook containing 
 - **對話工作台:** conversation history, status badges, HITL ticket panels, and sandbox previews.
 - **Audit Log:** Governance Trace, Engineering Metrics JSON, raw JSON view, and a download button for the latest log.
 - **知識庫文件:** all loaded local Markdown files and expandable raw-content previews.
-- **Session state:** stores the current conversation and only the latest audit log. Clearing the conversation resets both; there is no durable persistence.
-- **Conversation carry-forward:** follow-ups beginning with `那`, `如果`, `那如果`, `改成`, or `換成` reuse the immediately preceding user query for retrieval.
+- **Session state:** stores the current conversation, product-context memory, and the latest audit log. Clearing the conversation resets all three; there is no durable persistence.
+- **Product-context memory:** short follow-ups can reuse active product, region, specification fields, and cited documents instead of relying only on the immediately previous user query.
 
-## Tests And Roadmap Notes
+## Tests
 
 ```powershell
 python -m unittest discover -s tests
 ```
 
-- `tests/test_corpus_integrity.py` verifies the simulated product/certification corpus and its disclaimer boundaries.
-- `tests/test_current_carry_forward_regression.py` documents the current limitation: follow-up retrieval composition uses only the immediately previous user query.
-- `tests/test_product_context_memory_contract.py` defines expected behavior for a future `ProductConversationMemory` implementation and is intentionally marked with `expectedFailure` until that layer exists.
-- [`docs/product_context_memory_demo_plan.md`](docs/product_context_memory_demo_plan.md) describes the intended future multi-turn product-context story.
+The current suite has 51 passing tests:
+
+* `tests/test_corpus_integrity.py` verifies the simulated product/certification corpus and its disclaimer boundaries.
+* `tests/test_current_carry_forward_regression.py` pins the old immediate-previous-query baseline and verifies the new composed query preserves product/certification context.
+* `tests/test_product_context_memory_contract.py` verifies the memory schema, deterministic turn updates, bounded state, citation recall, escalation routing, and seven-turn acceptance scenario.
+* `tests/test_product_context_memory_extended.py` covers longer-horizon memory, region carry-forward, governance fail-safes, spec-conflict detection, tokenizer safety, empty input, determinism, and debug observability.
+* `tests/test_app_memory_integration.py` verifies app-level follow-up rescue, citation recall, off-topic zero retrieval, guarantee escalation, memory reset, and memory state in the audit log.
+
+See [`docs/current_state_note.md`](docs/current_state_note.md), [`docs/product_context_memory_report.md`](docs/product_context_memory_report.md), and [`docs/product_context_memory_demo_plan.md`](docs/product_context_memory_demo_plan.md) for design notes and implementation rationale.
 
 ## Setup And Run
 
@@ -229,10 +245,13 @@ Keep `.env` and `.streamlit/secrets.toml` local.
 ```text
 .
 |-- app.py
+|-- product_context_memory.py
 |-- data/docs/
 |-- DEMO_SPEC_v2.1.md
 |-- docs/demo_guide.md
+|-- docs/current_state_note.md
 |-- docs/product_context_memory_demo_plan.md
+|-- docs/product_context_memory_report.md
 |-- requirements.txt
 |-- tests/
 |-- .env.example
@@ -243,11 +262,11 @@ Keep `.env` and `.streamlit/secrets.toml` local.
 
 Use this project as a governed enterprise AI workflow demo, not as a production compliance engine. A precise resume description is:
 
-> Built a Streamlit prototype for an electronics-certification AI workflow with deterministic routing, local Markdown RAG, citation grounding, an Evidence Gate, simulated HITL escalation, a Data Ops SQL dry-run sandbox, and an audit-log panel. The system blocks production writes and high-risk guarantees, escalates low-confidence retrieval to human review, and keeps all outputs within explicit evidence and permission boundaries.
+> Built a Streamlit prototype for an electronics-certification AI workflow with deterministic routing, local Markdown RAG, citation grounding, an Evidence Gate, simulated HITL escalation, a Data Ops SQL dry-run sandbox, bounded product-context memory, citation recall, follow-up rescue, and an audit-log panel. The system blocks production writes and high-risk guarantees, escalates low-confidence retrieval to human review, and keeps outputs within explicit evidence, permission, and memory-state boundaries.
 
 If space is limited, use this shorter version:
 
-> Streamlit governed AI workflow demo for electronics certification: deterministic router, evidence-gated local RAG, HITL escalation, SQL dry-run sandbox, and audit logging with simulated Markdown corpus.
+> Streamlit governed AI workflow demo for electronics certification: deterministic router, evidence-gated local RAG, bounded product-context memory, HITL escalation, SQL dry-run sandbox, and audit logging over a simulated Markdown corpus.
 
 ## Known Limitations
 
@@ -255,7 +274,8 @@ If space is limited, use this shorter version:
 - Retrieval is local keyword scoring over Markdown sections, not vector or hybrid search.
 - The knowledge base contains simulated documents only; it does not represent real compliance evidence.
 - HITL tickets, approval queues, messages, and audit logs are simulated and not persisted.
+- Product-context memory is deterministic and catalog/regex-based; it does not perform learned entity extraction or real compliance reasoning.
+- Product-context memory lives in Streamlit session state and is not persisted across page reloads or deployments.
 - Only the most recent audit log is retained in Streamlit session state.
 - The sandbox validator accepts only one fixed update to fake record `DEMO-001`; it never executes SQL.
-- Conversation carry-forward uses only the immediately preceding user query and a small set of follow-up prefixes; full product-context memory is planned but not implemented.
 - There is no production authentication, authorization, tenant isolation, monitoring, or external-system integration.
